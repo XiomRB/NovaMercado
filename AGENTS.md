@@ -99,6 +99,8 @@ tests/fixtures/ catálogo y ejemplos sintéticos: las pruebas nunca leen raw/
 * Tablas de solo inserción (triggers): solicitudes, familias de la solicitud,
   predicciones, envíos, historial, calidad y ventas históricas.
   `observaciones` admite `UPDATE` (corrección) con fila en el historial.
+  Una solicitud rechazada no admite familias/predicciones y un envío rechazado
+  no crea ni modifica observaciones (triggers de coherencia).
 * Escribir solo mediante `app/db/repositorio.py` dentro de
   `app.db.conexion.transaccion` (una unidad de trabajo por solicitud HTTP).
 * Idempotencia de observaciones: clave (fecha, tienda, familia) + advisory lock

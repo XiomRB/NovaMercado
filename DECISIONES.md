@@ -380,6 +380,15 @@ fecha puede tener varias solicitudes). La vista `v_predicciones_reales` las une.
   `DELETE` y `TRUNCATE`: una solicitud o predicción histórica no se puede sobrescribir.
 * `observaciones` admite `UPDATE` (corrección de una venta) pero no `DELETE`
   ni `TRUNCATE`; cada cambio deja su fila en `observaciones_historial`.
+* **Coherencia con los rechazos** (triggers `BEFORE INSERT`): una solicitud
+  rechazada no admite familias (ni, por la FK compuesta, predicciones); un envío
+  rechazado no puede crear ni modificar observaciones ni filas del historial.
+  Basta comprobarlo al insertar porque el `resultado` del padre es inmutable.
+  *Detectado en la verificación del PR #3:* sin estos triggers la base aceptaba
+  una predicción colgada de una solicitud rechazada.
+* Los triggers no interfieren con las migraciones: `DROP TABLE` no los
+  dispara, así que `downgrade` funciona con datos cargados, y `downgrade`
+  elimina también sus funciones.
 
 ### Idempotencia de observaciones
 
@@ -417,7 +426,7 @@ modificados sin una segunda lectura).
 
 ### Verificación
 
-* `tests/integracion/` (45 pruebas, PostgreSQL real): migraciones
+* `tests/integracion/` (60 pruebas, PostgreSQL real): migraciones
   up/down/up y esquema idéntico al modelo, carga idempotente y atómica con
   detección de archivos modificados, inserción y consulta de solicitudes con
   promociones reales y supuestas, rechazos, varias solicitudes del mismo día,
@@ -425,12 +434,17 @@ modificados sin una segunda lectura).
   integridad referencial, atomicidad ante un fallo a mitad de transacción,
   idempotencia y modificación de observaciones con historial, envíos
   concurrentes, observación de una fecha del histórico (manda el histórico) y
-  relación predicción ↔ venta real.
+  relación predicción ↔ venta real. Además: historial con valor anterior,
+  nuevo, envío y `registrado_en`, y atómico con la modificación (un fallo
+  posterior revierte ambos); rechazos sin tienda ni fecha determinables, sin
+  familias ni predicciones; modificar observaciones no altera el histórico;
+  consolidación determinista; `downgrade`/`upgrade` con datos y `upgrade`
+  repetido sin efecto.
 * Errores de conexión: servidor inaccesible (prueba unitaria, falla en < 10 s),
   conexión cortada a mitad de transacción y recuperación del pool tras un corte.
 * Mutaciones verificadas: quitar el *advisory lock* hace fallar la prueba de
   concurrencia (3 de 3 ejecuciones); contar como modificado un valor igual hace
-  fallar 10 pruebas.
+  fallar 10 pruebas; quitar los triggers de coherencia hace fallar 5.
 * `scripts/verificar_persistencia_docker.sh`: datos, migración y cargas intactos
   tras `docker compose restart db` y tras `down` + `up`; la base de Airflow no
   contiene tablas del producto y usa otro volumen.
