@@ -177,3 +177,35 @@ def test_update_de_observaciones_permitido_no_de_envios(bd):
     with pytest.raises(IntegrityError, match="no admite"):
         with transaccion(bd) as c:
             c.execute(update(e.envios_observacion).values(registros_nuevos=0))
+
+
+# ------------------------------------------- verificación: rechazos sin tienda ni fecha
+@pytest.mark.parametrize("payload", [
+    {"fecha": "2025-06-20", "familias": [{"familia_id": "fam_a", "en_promocion": 1}]},   # sin tienda
+    {"tienda_id": "T5-2", "fecha": "2025-06-20", "familias": []},                      # tienda ambigua
+    {"tienda_id": 1, "fecha": "31/02/2025", "familias": []},                           # fecha inexistente
+    ["no", "es", "objeto"],
+])
+def test_rechazo_sin_tienda_ni_fecha_determinables(bd, payload):
+    from app.calidad import SolicitudRechazada
+    with pytest.raises(SolicitudRechazada) as exc:
+        _limpia(bd, payload)
+    with transaccion(bd) as c:
+        r = registrar_rechazo_prediccion(c, payload=payload, detalle=exc.value.detail)
+    with bd.connect() as c:
+        s = c.execute(select(e.solicitudes_prediccion)).one()
+    assert s.solicitud_id == r.solicitud_id and s.resultado == "rechazada" and s.detalle_rechazo == exc.value.detail
+    assert s.tienda_id is None and s.fecha is None and s.version_modelo is None and s.estado_calidad is None
+    assert s.payload == payload
+    for t in (e.solicitud_familias, e.predicciones, e.calidad_observaciones):
+        assert contar(bd, t) == 0
+
+
+def test_una_solicitud_rechazada_no_admite_familias_ni_predicciones(bd):
+    with transaccion(bd) as c:
+        r = registrar_rechazo_prediccion(c, payload={}, detalle="x")
+    with pytest.raises(IntegrityError, match="no fue respondida"):
+        with transaccion(bd) as c:
+            c.execute(insert(e.solicitud_familias).values(solicitud_id=r.solicitud_id, familia_id="fam_a",
+                                                          en_promocion=0, promocion_supuesta=False))
+    assert contar(bd, e.solicitud_familias) == 0 and contar(bd, e.predicciones) == 0

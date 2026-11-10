@@ -1,8 +1,9 @@
 """Esquema inicial de la base del producto (DECISIONES.md §11).
 
 Tablas generadas con ``alembic revision --autogenerate`` desde ``app/db/esquema.py``
-y revisadas; se agregan a mano los triggers de inmutabilidad y la vista
-``v_predicciones_reales``, que Alembic no detecta.
+y revisadas; se agregan a mano los triggers de inmutabilidad, los que impiden
+colgar familias, predicciones u observaciones de registros rechazados, y la
+vista ``v_predicciones_reales``, que Alembic no detecta.
 
 Revision ID: 0001
 Revises:
@@ -185,6 +186,7 @@ def upgrade() -> None:
     )
 
     _crear_inmutabilidad()
+    _crear_coherencia_con_rechazos()
     op.execute(VISTA)
 
 
@@ -206,6 +208,8 @@ def downgrade() -> None:
     op.drop_table('familias')
     op.drop_table('cargas_datos')
     op.execute("DROP FUNCTION IF EXISTS impedir_modificacion()")
+    op.execute("DROP FUNCTION IF EXISTS exigir_solicitud_respondida()")
+    op.execute("DROP FUNCTION IF EXISTS exigir_envio_aceptado()")
 
 
 FUNCION = """
@@ -216,6 +220,56 @@ BEGIN
 END
 $$;
 """
+
+# Una solicitud rechazada no tiene familias ni predicciones (predicciones depende de
+# solicitud_familias por FK), y un envío rechazado no crea ni modifica
+# observaciones. Basta verificarlo al insertar: el resultado del padre es inmutable.
+COHERENCIA = """
+CREATE FUNCTION exigir_solicitud_respondida() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF (SELECT resultado FROM solicitudes_prediccion WHERE solicitud_id = NEW.solicitud_id)
+       IS DISTINCT FROM 'respondida' THEN
+        RAISE EXCEPTION 'la solicitud % no fue respondida: no admite familias ni predicciones',
+            NEW.solicitud_id USING ERRCODE = 'check_violation';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION exigir_envio_aceptado() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    envios bigint[];
+    envio bigint;
+BEGIN
+    -- Asignaciones separadas: PL/pgSQL solo resuelve NEW.<campo> de la rama que ejecuta
+    IF TG_TABLE_NAME = 'observaciones' THEN
+        envios := ARRAY[NEW.envio_id_creacion, NEW.envio_id_modificacion];
+    ELSE
+        envios := ARRAY[NEW.envio_id];
+    END IF;
+    FOREACH envio IN ARRAY envios LOOP
+        IF envio IS NOT NULL AND (SELECT resultado FROM envios_observacion WHERE envio_id = envio)
+           IS DISTINCT FROM 'aceptado' THEN
+            RAISE EXCEPTION 'el envío % no fue aceptado: no puede crear ni modificar observaciones',
+                envio USING ERRCODE = 'check_violation';
+        END IF;
+    END LOOP;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER trg_solicitud_familias_respondida BEFORE INSERT ON solicitud_familias
+    FOR EACH ROW EXECUTE FUNCTION exigir_solicitud_respondida();
+CREATE TRIGGER trg_observaciones_envio_aceptado BEFORE INSERT OR UPDATE ON observaciones
+    FOR EACH ROW EXECUTE FUNCTION exigir_envio_aceptado();
+CREATE TRIGGER trg_observaciones_historial_envio_aceptado BEFORE INSERT ON observaciones_historial
+    FOR EACH ROW EXECUTE FUNCTION exigir_envio_aceptado();
+"""
+
+
+def _crear_coherencia_con_rechazos() -> None:
+    op.execute(COHERENCIA)
+
 
 VISTA = """
 CREATE VIEW v_predicciones_reales AS

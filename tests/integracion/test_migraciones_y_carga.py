@@ -59,9 +59,12 @@ def test_triggers_de_inmutabilidad_instalados(motor):
     por_tabla = {}
     for tabla, nombre in filas:
         por_tabla.setdefault(tabla, set()).add(nombre)
+    coherencia = {"solicitud_familias": {"trg_solicitud_familias_respondida"},
+                  "observaciones_historial": {"trg_observaciones_historial_envio_aceptado"}}
     for t in e.TABLAS_SOLO_INSERCION:
-        assert por_tabla[t] == {f"trg_{t}_inmutable", f"trg_{t}_sin_truncate"}
-    assert por_tabla["observaciones"] == {"trg_observaciones_sin_borrado", "trg_observaciones_sin_truncate"}
+        assert por_tabla[t] == {f"trg_{t}_inmutable", f"trg_{t}_sin_truncate"} | coherencia.get(t, set())
+    assert por_tabla["observaciones"] == {"trg_observaciones_sin_borrado", "trg_observaciones_sin_truncate",
+                                          "trg_observaciones_envio_aceptado"}
 
 
 # ------------------------------------------------------------------ carga
@@ -112,3 +115,41 @@ def test_carga_atomica_ante_error_de_integridad(motor, tmp_path):
     with motor.connect() as c:
         for t in (e.cargas_datos, e.tiendas, e.familias, e.ventas_historicas):
             assert c.execute(select(func.count()).select_from(t)).scalar() == 0
+
+
+# ------------------------------------------- verificación: triggers vs migraciones y operación
+def test_migraciones_con_datos_y_triggers(url_bd_vacia, tmp_path):
+    """Los triggers no impiden revertir ni volver a aplicar el esquema con datos cargados,
+    y repetir upgrade sobre una base al día no hace nada."""
+    from app.db.conexion import crear_motor
+    from tests.integracion.apoyo import observar, payload_observacion, payload_prediccion, predecir_y_registrar
+    cfg = config_alembic(url_bd_vacia)
+    command.upgrade(cfg, "head")
+    m = crear_motor(url_bd_vacia)
+    cargar_sinteticos(m, tmp_path)
+    predecir_y_registrar(m, payload_prediccion())
+    observar(m, payload_observacion())
+    observar(m, payload_observacion(ventas={"fam_a": 1, "fam_b": 150, "fam_c": 60}))
+    m.dispose()
+    command.upgrade(cfg, "head")                         # ya al día: no-op
+    assert "solicitudes_prediccion" in _tablas(url_bd_vacia)
+    command.downgrade(cfg, "base")                       # DROP no se bloquea por los triggers
+    assert _tablas(url_bd_vacia) == {"alembic_version"}
+    command.upgrade(cfg, "head")
+    m = crear_motor(url_bd_vacia)
+    cargar_sinteticos(m, tmp_path / "otra")              # operación normal tras recrear
+    r, _, _ = predecir_y_registrar(m, payload_prediccion())
+    assert r.solicitud_id == 1
+    m.dispose()
+
+
+def test_funciones_de_triggers_se_eliminan_en_downgrade(url_bd_vacia):
+    cfg = config_alembic(url_bd_vacia)
+    command.upgrade(cfg, "head")
+    command.downgrade(cfg, "base")
+    m = create_engine(url_bd_vacia, future=True)
+    with m.connect() as c:
+        funciones = c.execute(text("SELECT proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+                                   "WHERE n.nspname = 'public'")).scalars().all()
+    m.dispose()
+    assert funciones == []
