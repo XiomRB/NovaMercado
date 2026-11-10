@@ -33,3 +33,6 @@ mlartifacts/
 # Herramientas de calidad y reportes de la CI
 .ruff_cache/
 reportes-ci/
+
+# Artefactos del modelo entrenados localmente (etapa 4)
+modelos/

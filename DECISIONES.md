@@ -12,7 +12,8 @@ del Anexo tiene prioridad sobre cualquier decisión de implementación.
 | MLflow | 2.22.1 |
 | PostgreSQL | imagen `postgres:16.14-alpine` |
 | Alembic | 1.14.1 (igual que las constraints de Airflow 2.10.5) |
-| ruff (solo desarrollo y CI) | 0.17.2 |
+| joblib | 1.6.0 (formato del artefacto del modelo) |
+| ruff, pytest-timeout (solo desarrollo y CI) | 0.17.2, 2.3.1 |
 | numpy / pandas / scipy / scikit-learn | 1.26.4 / 2.1.4 / 1.15.2 / 1.6.1 |
 | pydantic / SQLAlchemy / psycopg2-binary | 2.10.6 / 1.4.54 / 2.9.10 |
 | FastAPI / uvicorn | 0.115.12 / 0.34.0 |
@@ -125,7 +126,7 @@ Aritmético (0.5 hacia arriba), no el redondeo bancario de Python, para que
   valor** (nunca se recorta ni se convierte en 0). Ver §9.
 * **D3:** se rechazan fechas anteriores a la apertura de la tienda; se aceptan
   fechas dentro y después del histórico. La advertencia por observaciones
-  desactualizadas depende de la base de datos y se implementa en la etapa 4.
+  desactualizadas se implementó en la etapa 4 (§13, D-D).
 * **D6:** los archivos publicados se colocan en `raw/` (excluida de git).
 
 ## 4. Pruebas sin datos del repositorio
@@ -257,7 +258,7 @@ Holgado para el límite de 10 minutos por reentrenamiento.
   el máximo, y ese es el supuesto que la advertencia informa.
 * Acción: `advertir`, conservando el valor. `limpiar_solicitud_prediccion`
   recibe los máximos del modelo vigente (parámetro `maximos_promocion`); la API
-  los pasará en la etapa 4. Sin máximos (o familia sin máximo) no se advierte.
+  se los pasa desde la etapa 4. Sin máximos (o familia sin máximo) no se advierte.
 * Se prueba que el umbral no cambia si se alteran datos posteriores al corte.
 
 ## 10. Promociones al reentrenar
@@ -407,7 +408,7 @@ que serializa envíos concurrentes del mismo día:
 Cada operación de la API es una unidad de trabajo (`app.db.conexion.transaccion`):
 la solicitud, sus familias, predicciones y observaciones de calidad se guardan
 todas o ninguna. Los errores de conexión se traducen a `BaseDatosNoDisponible`
-(la API responderá 503 en la etapa 4); los de integridad se propagan como
+(la API responde 503, §13); los de integridad se propagan como
 errores de programación. El motor usa `pool_pre_ping` (reconecta tras un corte)
 y `connect_timeout`.
 
@@ -470,7 +471,146 @@ modificados sin una segunda lectura).
   commit propio y con la suite completa sin cambios.
 * **Fuera de alcance:** no hay despliegue ni publicación de imágenes.
 
+## 13. API (etapa 4)
+
+### Decisiones aprobadas (D-A a D-G)
+
+* **D-A · Modelo local:** `python -m app.modelo.entrenar_local` entrena con la
+  base (configuración aprobada `hgb_relativo + mult_familia`; ventas
+  consolidadas y promociones reales) y escribe `modelos/modelo_local.joblib` de
+  forma atómica. Versión `local-AAAAMMDD-<sha256[:12]>`: depende del corte de
+  los datos y del contenido, no del reloj. Alias `local`. **La API no entrena al
+  iniciar**; sin artefacto (o si no carga) responde 503 y `/health` lo refleja.
+  El artefacto no se versiona (`modelos/` en `.gitignore`). Se rechaza si fue
+  creado con otras versiones de scikit-learn, numpy o pandas.
+* **D-B · Componentes requeridos:** `COMPONENTES_REQUERIDOS` (por defecto
+  `base_datos,modelo` en esta etapa). Un componente no requerido y sin
+  verificación aparece como `no_configurado`; uno requerido sin verificación
+  degrada el estado: `ok` nunca oculta una dependencia ausente.
+* **D-C · Base caída al predecir:** 503; no se entrega una predicción sin registrar.
+* **D-D · Antigüedad:** se advierte si la última venta real de una familia es
+  anterior a F−1 (lo normal es que llegue la de F−1 antes de la solicitud de F).
+  Un solo mensaje en `fecha` lista las familias y días; sin ventas en 28 días
+  (o sin ventas previas) se informa que se usó el nivel de respaldo. Se calcula
+  **solo con ventas de fecha < F** (`advertir_antiguedad` rechaza otra cosa) y
+  nunca con el reloj del sistema.
+* **D-E · Rechazo con la base caída:** se responde 422 igual; el log registra el
+  fallo con el tipo de error, **sin el contenido de la solicitud**.
+* **D-F · `/admin`:** `OrquestadorNoConfigurado` → `POST` 503 y `GET` 404 hasta la etapa 7.
+* **D-G · `venta_esperada`:** redondeada a 2 decimales; la cantidad se calcula sin redondear.
+
+### Arquitectura
+
+* Endpoints delgados (`app/main.py`) que leen el cuerpo crudo: la validación de
+  FastAPI no interviene, así que la capa de calidad puede reparar e informar.
+  Cuerpo no JSON → 422 y se registra `{"cuerpo_no_json": <primeros 2000 caracteres>}`.
+* Servicios sin HTTP (`app/servicios/`) sobre una interfaz `Persistencia`
+  (PostgreSQL en producción; en memoria en las pruebas de contrato).
+* Flujo de predicción: modelo vigente → limpieza con los **máximos de promoción
+  del modelo cargado** → en una transacción: ventas previas (solo < F; ventana de
+  60 días más la última venta de cada familia, para que `ultimo_valor` y
+  `dias_desde_ultimo` coincidan con los del entrenamiento) → antigüedad →
+  predicción → validación de la respuesta con Pydantic → registro.
+* `GestorModelo`: referencia inmutable al modelo (cambio atómico), recarga en
+  segundo plano cuando cambia la huella del proveedor y **conserva el modelo
+  vigente** si la carga nueva falla. La etapa 5 agrega `ProveedorMLflow` sin
+  cambiar la API.
+* `MonitorSalud`: verificaciones **en paralelo** con límite global por ciclo
+  (`SALUD_LIMITE`, 3 s) cada `SALUD_INTERVALO` (10 s); una verificación colgada
+  cuenta como falla y no se relanza mientras siga colgada; `/health` solo lee el
+  último resultado. Peor caso de transición: 13 s.
+* Errores: `SolicitudRechazada` → 422; `ModeloNoDisponible` y
+  `BaseDatosNoDisponible` → 503; cualquier otro → 500 genérico (registrado en el
+  log, sin detalles internos en la respuesta).
+
+### Verificación
+
+* `tests/api/` (62, sin base): contrato de los seis endpoints, E01–E10 por HTTP,
+  cuerpos inválidos, promociones supuestas y atípicas, antigüedad, sin fuga
+  temporal (predecir F con datos posteriores en la base = sin ellos),
+  solicitudes repetidas, 300 cuerpos aleatorios sin ningún 500, sin modelo, base
+  caída y recuperación, rechazo con la base caída sin exponer datos en el log;
+  monitor (paralelo, límite, colgadas, transiciones) y gestor (recarga, conserva
+  el vigente, lecturas concurrentes).
+* `tests/integracion/test_api_postgres.py` (9, PostgreSQL): registro completo,
+  idempotencia y relación con la venta real, rechazos, sin fuga con la base real
+  (igual al modelo con el histórico truncado en F), ventas previas estrictamente
+  anteriores, base inaccesible, `entrenar_desde_bd` sin promociones supuestas y
+  carga de un artefacto nuevo sin reiniciar.
+* **Error encontrado:** SQLAlchemy entrega los nombres de columna como
+  `quoted_name` y scikit-learn los rechazaba al predecir o entrenar con datos de
+  la base; se convierten a `str` en el repositorio (prueba de regresión).
+* Mutaciones: incluir ventas de F en la consulta, ejecutar las verificaciones en
+  serie y descartar el modelo vigente al fallar una recarga hacen fallar pruebas.
+* Con los datos reales (solo local): `entrenar_local` en 14 s
+  (`local-20260301-…`, 80 028 filas); servidor uvicorn real con los ejemplos
+  publicados (≈0.1 s por predicción); la predicción de la tienda 5 para
+  2026-03-01 coincide con la de la etapa 2 (1837.13 / 2252); con la base
+  congelada (`docker pause`) `/health` pasó a degradado en 3.7 s y volvió a ok
+  en 4.9 s, y la predicción respondió 503 en 5 s.
+
+### Límite de las consultas (revisión del PR #4)
+
+La versión inicial solo limitaba el tiempo de **conexión**; una consulta ya
+enviada a un servidor que dejaba de responder podía esperar indefinidamente. Se
+agregaron dos capas en `app/db/conexion.py`:
+
+| Capa | Mecanismo | Valor (API) | Variable |
+|---|---|---|---|
+| Conexión | `connect_timeout` de libpq | 5 s | `DB_TIMEOUT_CONEXION` |
+| Servidor | `statement_timeout`: PostgreSQL cancela la consulta (también la espera de locks); la conexión sigue usable | 5 s | `DB_TIMEOUT_CONSULTA` |
+| Servidor | `idle_in_transaction_session_timeout`: libera transacciones de un cliente que dejó de responder | máx(6 × consulta, 30 s) | (derivado) |
+| Cliente | vigilante por operación (`execute`, `executemany`, `commit`, `rollback`) sobre una clase de conexión psycopg2: al vencer, cierra el socket; psycopg2 sale del bloqueo con error y la conexión se descarta | consulta + 2 s = 7 s | `DB_MARGEN_CLIENTE` |
+
+* Ambas capas terminan en `BaseDatosNoDisponible` → 503. La transacción se
+  revierte: si el servidor canceló, PostgreSQL la aborta; si el cliente cortó,
+  nunca se envió el `COMMIT` y el servidor la revierte al cerrarse la conexión
+  (o por `idle_in_transaction_session_timeout`).
+* **Por qué 5 s:** una predicción usa unas pocas consultas de milisegundos
+  (≈0.1 s en total con los datos reales); 5 s es 50 veces eso y deja margen
+  para esperar el *advisory lock* de envíos concurrentes de observaciones.
+  Peor caso de una solicitud con la base sin responder: 7 s (vigilante) + 5 s
+  (reintento de conexión) ≈ 12 s, siempre acotado.
+* Los procesos por lotes (`app.db.carga`, `entrenar_local`, verificación de
+  persistencia) usan `timeout_consulta=300`. Las migraciones de Alembic usan su
+  propio motor sin límite.
+* *Alternativas descartadas:* solo `statement_timeout` (no actúa si el servidor
+  no responde); TCP keepalive o `tcp_user_timeout` (un servidor congelado sigue
+  confirmando paquetes a nivel del sistema operativo); un límite sobre toda la
+  solicitud HTTP (no interrumpe la llamada bloqueada en psycopg2 ni revierte la
+  transacción).
+
+Verificación (`tests/integracion/test_limites_consulta.py`, 7 pruebas, con un
+proxy TCP que se puede congelar para simular un servidor sin respuesta):
+cancelación en el servidor (`pg_sleep`), corte en el cliente con el servidor
+congelado, corte a mitad de una transacción sin confirmación, API con un
+`INSERT` lento (503 en < 3 s, sin solicitud, familias ni calidad parciales),
+API con el servidor congelado (503, `/health` responde en < 0.5 s y pasa a
+degradado, `/modelo` responde, recuperación al volver), congelamiento a mitad
+del registro (no se confirma nada) y monitor acotado por su límite. Estable en
+3 de 3 repeticiones. Mutaciones: sin el vigilante del cliente la prueba queda
+esperando indefinidamente (pytest-timeout la corta a los 60 s); sin
+`statement_timeout` falla la prueba del servidor.
+
+### Limitaciones que permanecen
+
+* **Resultado incierto del `COMMIT`:** si el servidor deja de responder después
+  de recibir el `COMMIT` pero antes de confirmarlo al cliente, la API responde
+  503 aunque la predicción pudo haberse guardado. Es inherente a cualquier
+  cliente de base de datos; queda una solicitud registrada sin respuesta
+  entregada, nunca una respuesta sin registro.
+* El corte del cliente descarta esa conexión; la siguiente operación abre otra
+  (hasta `DB_TIMEOUT_CONEXION` si el servidor sigue sin responder).
+* Una consulta legítima que tarde más de 5 s en la API se cancela (503); no
+  ocurre con el volumen actual, pero si la base crece habría que revisar índices
+  o el límite.
+
 ## Pendientes de decidir (etapas siguientes)
 
+No quedan decisiones abiertas de las etapas 0–4. Por definir en las siguientes:
 
-* Umbral de antigüedad de observaciones para advertir (D3), etapa 4.
+* Etapa 5: nombre y alias del modelo en el Model Registry, consulta del alias y
+  caché local del modelo (para seguir prediciendo con MLflow caído).
+* Etapa 6: arranque automático (migraciones, carga y primer entrenamiento) y
+  `COMPONENTES_REQUERIDOS` con los cinco componentes.
+* Etapa 7: DAG, criterio de reemplazo con datos suficientes y orquestador real de `/admin`.

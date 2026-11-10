@@ -7,10 +7,10 @@ producto, sugiere la cantidad a tener disponible según el costo de faltantes y
 sobrantes, se defiende de datos defectuosos, registra la operación y se
 reentrena automáticamente.
 
-> **Estado:** etapas 0–2 integradas (calidad de datos, contrato, modelos y
-> backtesting). Etapa 3 (persistencia en PostgreSQL y CI) en revisión. La API,
-> MLflow y Airflow se agregan en las etapas 4–7; este README se completará con
-> el arranque del producto entero (`docker compose up`) cuando existan.
+> **Estado:** etapas 0–3 integradas (calidad de datos, contrato, modelos,
+> backtesting, persistencia y CI). Etapa 4 (API) en revisión. MLflow, el
+> arranque completo con Docker y Airflow llegan en las etapas 5–7; este README
+> se completará con `docker compose up` cuando existan.
 
 ## Datos publicados
 
@@ -69,10 +69,39 @@ python -m app.db.carga --raw raw  # carga los datos publicados (idempotente)
 
 Diseño de tablas, claves, restricciones e idempotencia: `DECISIONES.md` §11.
 
+## API (etapa 4)
+
+Con las bases levantadas, migradas y cargadas (sección anterior):
+
+```bash
+set -a && . ./.env && set +a
+python -m app.modelo.entrenar_local          # entrena con la base y guarda modelos/modelo_local.joblib
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+| Endpoint | Etapa 4 |
+|---|---|
+| `POST /v1/prediccion` | limpieza, advertencias, predicción y registro en PostgreSQL |
+| `POST /v1/observaciones` | registro idempotente (`registros_guardados` = nuevos + modificados) |
+| `GET /modelo` | modelo cargado: `nombre`, `alias` (`local`), `version` (`local-AAAAMMDD-<hash>`) |
+| `GET /health` | `ok` / `degradado` + `motivo` (200); 503 sin modelo |
+| `POST /admin/reentrenar`, `GET /admin/reentrenar/{id}` | 503 / 404 hasta la etapa 7 (Airflow) |
+
+* La API **no entrena al iniciar**: sin artefacto responde 503 en
+  `/v1/prediccion` y `/health`. Al ejecutar `entrenar_local` con la API en
+  marcha, el modelo nuevo se carga solo (consulta cada `MODELO_INTERVALO_REFRESCO` s).
+* Rechazos: 422 con `detail`; quedan registrados (si la base no responde, se
+  responde 422 igual y el fallo se registra en el log).
+* Base de datos no disponible o que no responde: 503 (nunca se entrega una
+  predicción sin registrarla). Cada consulta tiene un límite (`DB_TIMEOUT_CONSULTA`,
+  5 s, en el servidor; +`DB_MARGEN_CLIENTE` en el cliente): ninguna solicitud
+  queda esperando indefinidamente.
+* Documentación interactiva: `http://localhost:8000/docs`.
+
 ## Pruebas
 
 ```bash
-python -m pytest -q -m "not integracion"     # sin base de datos (calidad, contrato, ML)
+python -m pytest -q -m "not integracion"     # sin base de datos (calidad, contrato, ML, API)
 bash scripts/pruebas_integracion_local.sh     # integración con un PostgreSQL desechable en Docker
 bash scripts/verificar_persistencia_docker.sh # reinicio y down/up de los contenedores sin perder datos
 ```
@@ -133,6 +162,11 @@ app/
   calidad/        limpieza de datos: reparar / advertir / rechazar
   schemas/        modelos Pydantic del contrato
   db/             esquema, conexión/transacciones, carga de datos, repositorio
+  modelo/         proveedor del modelo, gestor (recarga), entrenamiento desde la base
+  servicios/      predicción, observaciones, rechazos, interfaz de persistencia
+  main.py         FastAPI (endpoints y manejo de errores)
+  salud.py        monitor de salud en segundo plano
+  orquestador.py  interfaz del reentrenamiento (Airflow en la etapa 7)
   config.py       configuración por variables de entorno
 ml/               variables, modelos, costo y cantidad sugerida, backtesting
 migraciones/      Alembic (versions/0001_esquema_inicial.py)
@@ -143,7 +177,8 @@ tests/
   unit/           pruebas por módulo y de robustez
   ml/             sin fuga temporal, costo/cuantil, modelos y backtesting
   ejemplos/       un ejemplo sintético por caso del catálogo de errores
-  integracion/    PostgreSQL: migraciones, carga, idempotencia, integridad
+  api/            contrato HTTP, salud y modelo (persistencia en memoria, modelo sintético)
+  integracion/    PostgreSQL: migraciones, carga, idempotencia, integridad, API completa
   fixtures/       catálogo y ejemplos sintéticos (sin datos originales)
 .github/          workflow de CI y su script de resumen
 docker-compose.yml, .env.example, alembic.ini

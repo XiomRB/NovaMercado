@@ -107,7 +107,7 @@ def main() -> int:
     ap.add_argument("accion", choices=["escribir", "verificar"])
     ap.add_argument("--estado", required=True, type=Path)
     a = ap.parse_args()
-    motor = crear_motor()
+    motor = crear_motor(timeout_consulta=300)
     try:
         if a.accion == "escribir":
             estado = escribir(motor)

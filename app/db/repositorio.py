@@ -181,7 +181,8 @@ def cargar_catalogo(conn: Connection) -> Catalogo:
 
 def _df(conn: Connection, consulta, fechas: Iterable[str] = ()) -> pd.DataFrame:
     resultado = conn.execute(consulta)
-    df = pd.DataFrame(resultado.all(), columns=list(resultado.keys()))
+    # str(): SQLAlchemy entrega nombres como quoted_name, que scikit-learn rechaza como nombres de variables
+    df = pd.DataFrame(resultado.all(), columns=[str(k) for k in resultado.keys()])
     for c in fechas:
         df[c] = pd.to_datetime(df[c])
     return df
@@ -221,12 +222,42 @@ def leer_promociones_solicitudes(conn: Connection) -> pd.DataFrame:
     return df[COLUMNAS_SOLICITUDES]
 
 
+_VENTAS_PREVIAS = """
+(SELECT fecha, tienda_id, familia_id, ventas FROM {tabla}
+  WHERE tienda_id = :tienda AND fecha >= :desde AND fecha < :fecha)
+UNION
+(SELECT DISTINCT ON (familia_id) fecha, tienda_id, familia_id, ventas FROM {tabla}
+  WHERE tienda_id = :tienda AND fecha < :fecha
+  ORDER BY familia_id, fecha DESC)
+"""
+
+
+def leer_ventas_previas(conn: Connection, tienda_id: int, fecha: date, dias: int = 60) -> pd.DataFrame:
+    """Ventas reales de la tienda **anteriores a** ``fecha`` (nunca de ``fecha`` ni posteriores).
+
+    Incluye los ``dias`` previos y, por familia, la última venta conocida aunque
+    sea más antigua: así ``ultimo_valor`` y ``dias_desde_ultimo`` coinciden con
+    los que se calcularían con todo el histórico. Histórico y observaciones se
+    consolidan con :func:`ml.datos.consolidar_ventas` (manda el histórico).
+    """
+    from datetime import timedelta
+
+    from ml.datos import consolidar_ventas
+    params = {"tienda": int(tienda_id), "fecha": fecha, "desde": fecha - timedelta(days=dias)}
+    hist = _df(conn, text(_VENTAS_PREVIAS.format(tabla="ventas_historicas")).bindparams(**params), ["fecha"])
+    obs = _df(conn, text(_VENTAS_PREVIAS.format(tabla="observaciones")).bindparams(**params), ["fecha"])
+    if hist.empty:
+        hist = pd.DataFrame({c: pd.Series(dtype=t) for c, t in
+                             [("fecha", "datetime64[ns]"), ("tienda_id", int), ("familia_id", str), ("ventas", int)]})
+    return consolidar_ventas(hist, obs)[CLAVE + ["ventas"]]
+
+
 def leer_predicciones_reales(conn: Connection) -> pd.DataFrame:
     """Vista ``v_predicciones_reales``: cada predicción con la venta real conocida."""
     return _df(conn, text("SELECT * FROM v_predicciones_reales ORDER BY solicitud_id, familia_id"), ["fecha"])
 
 
 __all__ = ["CLAVE", "PrediccionFamilia", "ResultadoObservacion", "SolicitudRegistrada", "cargar_catalogo",
-           "json_seguro", "leer_datos_base", "leer_observaciones", "leer_predicciones_reales",
+           "json_seguro", "leer_datos_base", "leer_observaciones", "leer_predicciones_reales", "leer_ventas_previas",
            "leer_promociones_solicitudes", "registrar_observacion", "registrar_prediccion",
            "registrar_rechazo_observacion", "registrar_rechazo_prediccion"]

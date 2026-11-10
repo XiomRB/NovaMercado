@@ -62,3 +62,41 @@ def escribir_carpeta(datos: DatosBase, carpeta) -> None:
     datos.costos.to_csv(carpeta / "costos.csv", index=False)
     datos.feriados.assign(fecha=datos.feriados["fecha"].dt.strftime(iso)).to_csv(
         carpeta / "feriados.csv", index=False)
+
+
+def generar_contrato(fin: str = "2026-04-13", dias: int = 120, semilla: int = 0) -> DatosBase:
+    """Histórico sintético con el catálogo de ``tests/fixtures/catalogo`` (12 familias del
+    contrato; tiendas 1, 5 y 10). Termina en ``fin``, el día anterior a la fecha de los
+    ejemplos de ``tests/fixtures/ejemplos``. Costos inventados (no son los publicados)."""
+    from pathlib import Path
+    cat = Path(__file__).resolve().parents[1] / "fixtures" / "catalogo"
+    tiendas = pd.read_csv(cat / "tiendas.csv", parse_dates=["fecha_apertura"])
+    familias = pd.read_csv(cat / "familias.csv")
+    ids = list(familias["familia_id"])
+    pares = [(1.0, 0.2), (1.0, 2.5), (2.0, 0.1), (1.5, 1.0)]
+    costos = pd.DataFrame({"familia_id": ids,
+                           "costo_faltante": [pares[i % 4][0] for i in range(len(ids))],
+                           "costo_sobrante": [pares[i % 4][1] for i in range(len(ids))]})
+    fin_ts = pd.Timestamp(fin)
+    inicio = fin_ts - pd.Timedelta(days=dias - 1)
+    feriados = pd.DataFrame({
+        "fecha": [inicio + pd.Timedelta(days=30), inicio + pd.Timedelta(days=60), fin_ts + pd.Timedelta(days=5)],
+        "nombre": ["Feriado sintético", "Comercial sintético", "Feriado futuro sintético"],
+        "tipo": ["feriado", "comercial", "feriado"],
+        "ambito": ["nacional", "nacional", "Quetzaltenango"],
+    })
+    rng = np.random.default_rng(semilla)
+    dow = np.array([0.85, 0.9, 0.9, 0.95, 1.1, 1.3, 1.0])
+    nivel_tienda = {1: 300.0, 5: 350.0, 10: 60.0}
+    filas = []
+    for t in tiendas.itertuples():
+        for d in range(dias):
+            fecha = inicio + pd.Timedelta(days=d)
+            if fecha < t.fecha_apertura:
+                continue
+            for j, f in enumerate(ids):
+                promo = int(rng.random() < 0.4) * int(rng.integers(1, 8))
+                mu = nivel_tienda[t.tienda_id] * (0.15 + 0.07 * j) * dow[fecha.dayofweek] * (1 + 0.05 * promo)
+                filas.append((fecha, t.tienda_id, f, int(rng.poisson(mu)), promo))
+    historico = pd.DataFrame(filas, columns=["fecha", "tienda_id", "familia_id", "ventas", "en_promocion"])
+    return DatosBase(historico, tiendas, familias, costos, feriados)
