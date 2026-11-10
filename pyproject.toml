@@ -20,3 +20,7 @@ extend-exclude = ["raw", "reportes"]
 [tool.ruff.lint]
 # E/W: pycodestyle, F: pyflakes (errores reales), I: orden de imports
 select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# Migraciones generadas por Alembic: se conservan como las generó la herramienta
+"migraciones/versions/*" = ["E501"]
