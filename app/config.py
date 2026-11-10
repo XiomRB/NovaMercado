@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 
 class ConfiguracionInvalida(RuntimeError):
@@ -34,3 +35,24 @@ def segundos(variable: str, por_defecto: float) -> float:
     if n <= 0:
         raise ConfiguracionInvalida(f"{variable} debe ser positivo")
     return n
+
+
+COMPONENTES = ("api", "base_datos", "modelo", "mlflow", "airflow")
+# Etapa 4: MLflow y Airflow todavía no existen (DECISIONES.md §13, D-B). El
+# Compose del producto (etapa 6) exigirá los cinco componentes.
+COMPONENTES_REQUERIDOS_POR_DEFECTO = ("api", "base_datos", "modelo")
+
+
+def ruta_modelo() -> Path:
+    return Path(os.environ.get("MODELO_RUTA", "modelos/modelo_local.joblib"))
+
+
+def componentes_requeridos() -> tuple[str, ...]:
+    valor = os.environ.get("COMPONENTES_REQUERIDOS", "").strip()
+    if not valor:
+        return COMPONENTES_REQUERIDOS_POR_DEFECTO
+    nombres = tuple(dict.fromkeys(n.strip() for n in valor.split(",") if n.strip()))
+    desconocidos = set(nombres) - set(COMPONENTES)
+    if desconocidos:
+        raise ConfiguracionInvalida(f"COMPONENTES_REQUERIDOS tiene componentes desconocidos: {sorted(desconocidos)}")
+    return tuple(dict.fromkeys(("api", *nombres)))
