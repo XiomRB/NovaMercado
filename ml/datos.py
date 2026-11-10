@@ -154,3 +154,36 @@ def filas_supervisadas(ventas: pd.DataFrame, promociones: pd.DataFrame) -> tuple
         raise ValueError("ventas: hay valores nulos o negativos")
     sup = v.merge(p, on=CLAVE, how="inner").sort_values(CLAVE).reset_index(drop=True)
     return sup, len(v) - len(sup)
+
+
+def consolidar_ventas(historicas: pd.DataFrame, observaciones: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Una venta real por (fecha, tienda, familia) para entrenar y calcular variables.
+
+    Mismo criterio que :func:`consolidar_promociones`: el histórico publicado
+    **manda**; una observación registrada completa las claves que el histórico
+    no tiene. Si ambos existen y difieren, se usa el histórico, se conserva el
+    valor observado en ``ventas_observacion`` y se marca ``discrepancia``.
+    """
+    h = historicas[CLAVE + ["ventas"]].copy()
+    h["fecha"] = pd.to_datetime(h["fecha"])
+    _exigir_clave_unica(h, "ventas históricas")
+    h["origen"] = "historico"
+    if observaciones is None or observaciones.empty:
+        t = h.assign(ventas_observacion=pd.array([pd.NA] * len(h), dtype="Int64"), discrepancia=False)
+        return t.sort_values(CLAVE).reset_index(drop=True)
+    o = observaciones[CLAVE + ["ventas"]].copy()
+    o["fecha"] = pd.to_datetime(o["fecha"])
+    _exigir_clave_unica(o, "observaciones")
+    o = o.rename(columns={"ventas": "ventas_observacion"})
+    t = h.merge(o, on=CLAVE, how="outer")
+    solo_obs = t["ventas"].isna()
+    t.loc[solo_obs, "ventas"] = t.loc[solo_obs, "ventas_observacion"]
+    t.loc[solo_obs, "origen"] = "observacion"
+    t["ventas"] = t["ventas"].astype(int)
+    t["ventas_observacion"] = t["ventas_observacion"].astype("Int64")
+    t["discrepancia"] = (~solo_obs & t["ventas_observacion"].notna()
+                         & (t["ventas_observacion"] != t["ventas"])).astype(bool)
+    n = int(t["discrepancia"].sum())
+    if n:
+        logger.warning("ventas: %d claves con histórico y observación distintos; se usa el histórico", n)
+    return t.sort_values(CLAVE).reset_index(drop=True)
