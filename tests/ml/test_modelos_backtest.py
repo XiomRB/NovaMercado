@@ -7,7 +7,6 @@ from ml.calendario import Calendario
 from ml.metricas import agregar_costo, resumir
 from ml.modelos import BaselineDiaSemana, ModeloHGB
 from ml.pronosticador import ConfigEntrenamiento, Pronosticador, preparar
-
 from tests.ml.sinteticos import FAMILIAS, generar
 
 DATOS = generar()

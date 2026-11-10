@@ -7,7 +7,6 @@ import pytest
 from ml.calendario import Calendario
 from ml.datos import CLAVE, consolidar_promociones, discrepancias_promocion, filas_supervisadas
 from ml.pronosticador import ConfigEntrenamiento, Pronosticador, preparar
-
 from tests.ml.sinteticos import FAMILIAS, generar
 
 DATOS = generar()

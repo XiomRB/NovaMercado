@@ -4,7 +4,6 @@ import pandas as pd
 import pytest
 
 from ml.datos import COLUMNAS, cargar_raw
-
 from tests.ml.sinteticos import generar
 
 

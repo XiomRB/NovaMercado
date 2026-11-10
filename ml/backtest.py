@@ -18,8 +18,15 @@ from ml.calendario import Calendario
 from ml.costos import taus
 from ml.datos import DatosBase
 from ml.modelos import crear_modelo  # noqa: F401  (re-export útil en notebooks)
-from ml.pronosticador import (ESTRATEGIAS, ConfigEntrenamiento, CuantilesHGB, ajustar_con_calibracion,
-                              crear_calibrador, preparar, sugerir)
+from ml.pronosticador import (
+    ESTRATEGIAS,
+    ConfigEntrenamiento,
+    CuantilesHGB,
+    ajustar_con_calibracion,
+    crear_calibrador,
+    preparar,
+    sugerir,
+)
 
 
 @dataclass

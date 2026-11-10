@@ -6,7 +6,6 @@ import pytest
 
 from ml.calendario import Calendario
 from ml.features import COLUMNAS_MODELO, LAGS, construir_features
-
 from tests.ml.sinteticos import FAMILIAS, generar
 
 DATOS = generar()

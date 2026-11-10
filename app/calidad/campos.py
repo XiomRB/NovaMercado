@@ -14,7 +14,7 @@ Política, para cada clave recibida:
 
 from __future__ import annotations
 
-from app.calidad.resultado import SolicitudRechazada, RegistroCalidad
+from app.calidad.resultado import RegistroCalidad, SolicitudRechazada
 from app.calidad.texto import mejor_coincidencia, normalizar_clave
 
 # Solo sinónimos de significado inequívoco (ver DECISIONES.md §3). Se excluyen

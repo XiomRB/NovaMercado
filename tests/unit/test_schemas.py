@@ -3,8 +3,15 @@ from datetime import date
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.contrato import (Calidad, EstadoReentrenamiento, EstadoSalud, ModeloVigente,
-                                  RespuestaObservacion, RespuestaPrediccion, SolicitudPrediccion)
+from app.schemas.contrato import (
+    Calidad,
+    EstadoReentrenamiento,
+    EstadoSalud,
+    ModeloVigente,
+    RespuestaObservacion,
+    RespuestaPrediccion,
+    SolicitudPrediccion,
+)
 
 OBS_REPARAR = {"campo": "fecha", "accion": "reparar", "detalle": "x"}
 OBS_ADVERTIR = {"campo": "familias", "accion": "advertir", "detalle": "y"}
