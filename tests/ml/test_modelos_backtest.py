@@ -25,7 +25,7 @@ def resultado():
 
 # ------------------------------------------------------------------ baseline
 def test_baseline_promedio_mismo_dia_ultimas_cuatro_semanas():
-    X, y = preparar(DATOS.historico, DATOS.tiendas, CAL, FAMILIAS)
+    X, y, _ = preparar(DATOS.historico, DATOS.historico, DATOS.tiendas, CAL, FAMILIAS)
     b = BaselineDiaSemana().ajustar(X, y)
     fila = X[(X.fecha == pd.Timestamp("2025-05-20")) & (X.tienda_id == 1) & (X.familia_id == "fam_a")]
     H = DATOS.historico.set_index(["fecha", "tienda_id", "familia_id"])["ventas"]
@@ -35,7 +35,7 @@ def test_baseline_promedio_mismo_dia_ultimas_cuatro_semanas():
 
 
 def test_baseline_con_pocos_datos_y_sin_historia():
-    X, y = preparar(DATOS.historico, DATOS.tiendas, CAL, FAMILIAS)
+    X, y, _ = preparar(DATOS.historico, DATOS.historico, DATOS.tiendas, CAL, FAMILIAS)
     b = BaselineDiaSemana().ajustar(X, y)
     # tienda 3 abre el día 130: sus primeras filas tienen poca o ninguna historia
     t3 = X[X.tienda_id == 3].sort_values("fecha")
@@ -51,7 +51,7 @@ def test_baseline_con_pocos_datos_y_sin_historia():
 
 @pytest.mark.parametrize("objetivo", ["directo", "relativo"])
 def test_hgb_reproducible_y_no_negativo(objetivo):
-    X, y = preparar(DATOS.historico, DATOS.tiendas, CAL, FAMILIAS)
+    X, y, _ = preparar(DATOS.historico, DATOS.historico, DATOS.tiendas, CAL, FAMILIAS)
     a = ModeloHGB(objetivo, params=RAPIDO).ajustar(X, y).predecir(X)
     b = ModeloHGB(objetivo, params=RAPIDO).ajustar(X, y).predecir(X)
     np.testing.assert_array_equal(a, b)
@@ -114,7 +114,7 @@ def test_pronosticador_de_produccion_coincide_con_backtest(resultado, modelo, es
     corte = CORTES[1]
     cfg = ConfigEntrenamiento(**{**CONFIG.__dict__, "modelo": modelo, "estrategia": estrategia})
     H = DATOS.historico
-    p = Pronosticador.entrenar(H, DATOS.tiendas, DATOS.feriados, DATOS.costos, FAMILIAS, corte, cfg)
+    p = Pronosticador.entrenar(H, H, DATOS.tiendas, DATOS.feriados, DATOS.costos, FAMILIAS, corte, cfg)
     objetivo = H[(H.fecha >= corte) & (H.fecha < corte + pd.Timedelta(days=HORIZONTE))]
     prod = p.predecir(objetivo[["fecha", "tienda_id", "familia_id", "en_promocion"]], H)
     bt = resultado.predicciones
