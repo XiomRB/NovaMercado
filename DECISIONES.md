@@ -132,8 +132,111 @@ sobre los ejemplos publicados reales y se omite si `raw/ejemplos` no existe.
 verifica que el resultado sea siempre una solicitud válida o un rechazo
 controlado, nunca otra excepción.
 
+## 5. Información que usa el modelo al predecir
+
+Para la fecha F de una tienda y familia (`ml/features.py`):
+
+| Grupo | Variables | Disponible en producción porque… |
+|---|---|---|
+| Ventas reales previas | `lag_1, lag_2, lag_3, lag_7, lag_14, lag_21, lag_28`, `media_dow_4` (mismo día de la semana, 4 semanas), `media_7`, `media_28`, `std_28`, `ultimo_valor` | histórico + observaciones registradas con fecha < F |
+| Disponibilidad | `n_obs_28`, `n_dow_4`, `dias_desde_ultimo` | idem; permiten operar con observaciones faltantes |
+| Promoción | `en_promocion` **del día F** | llega en la solicitud |
+| Calendario | día de la semana, día del mes, mes, días para fin de mes | fecha |
+| Eventos | tipo de evento (feriado, comercial, pago, medio día), código del evento, víspera de feriado, día posterior a feriado; nacional o de la ciudad de la tienda | `feriados.csv` cubre el periodo de evaluación |
+| Atributos | tienda, tipo de tienda, familia (categóricas) | catálogos |
+
+**Garantía anti-fuga:** toda variable de ventas sale de la matriz diaria
+desplazada `shift(k)` con k ≥ 1. Se prueba de cuatro formas
+(`tests/ml/test_features.py`): alterar el futuro no cambia las variables
+(con objetivos de una y de varias fechas), calcular con todo el histórico da lo
+mismo que truncar en F, y los valores coinciden con un cálculo directo. Se
+verificó por mutación: con `shift(0)` fallan 8 pruebas.
+
+**Promociones de días pasados no se usan:** las observaciones de ventas reales
+no traen `en_promocion`, por lo que en operación no estarían disponibles de
+forma confiable. *Alternativa descartada:* rezagos de promoción tomados de las
+solicitudes de predicción; se puede reevaluar cuando existan registros.
+
+## 6. Modelos y validación temporal
+
+* **Baseline** (`baseline_dow4`): promedio de la venta del mismo día de la semana
+  en las últimas 4 semanas. Respaldo con pocos datos: media de 28 días → último
+  valor → media de la familia en tiendas del mismo tipo.
+* **`hgb_directo`:** `HistGradientBoostingRegressor` global, pérdida Poisson.
+* **`hgb_relativo`:** el mismo algoritmo, pero predice venta / media de 28 días y
+  expresa las variables de ventas relativas a ese nivel. Es invariante a la
+  escala de cada serie y se ajusta automáticamente a cambios de nivel.
+* Hiperparámetros fijos (`ml/modelos.py`, `PARAMS_HGB`), sin búsqueda: ajustarlos
+  sobre las mismas ventanas de prueba sesgaría la comparación. `early_stopping`
+  desactivado (evita particiones aleatorias internas).
+* **Backtesting con origen móvil:** 7 cortes, ventanas de prueba consecutivas de
+  28 días (2025-08-17 a 2026-02-28, 196 días, 23 520 filas por combinación).
+  En cada corte C se entrena con fechas < C y se predice [C, C+28) sin
+  reentrenar; cada día usa las ventas reales de días anteriores, como en la
+  operación. Todos los modelos se evalúan sobre las mismas filas (probado).
+* Producción y backtesting usan las mismas funciones
+  (`ml/pronosticador.py`); una prueba verifica que den resultados idénticos.
+
+### Resultados (`reportes/etapa2/resultados.md`)
+
+| Modelo + estrategia | Costo total | WAPE | MAE |
+|---|---|---|---|
+| **hgb_relativo + mult_familia** | **628 813** | 0.179 | 38.3 |
+| hgb_directo + mult_familia | 631 415 | 0.180 | 38.6 |
+| baseline_dow4 + mult_familia | 879 479 | 0.247 | 53.0 |
+| hgb_relativo + redondeo | 821 651 | 0.179 | 38.3 |
+| baseline_dow4 + redondeo | 1 124 054 | 0.247 | 53.0 |
+
+* El ML reduce el costo un **28.5 %** frente al baseline con la misma estrategia
+  de cantidad, y gana en **7 de 7** cortes (17–51 %; 18.3 % excluyendo los dos
+  cortes de fin de año, donde el baseline no anticipa los feriados).
+* Mejora en las 10 tiendas (24–33 %), en las 12 familias (20–53 %) y en las
+  120 series tienda×familia (mínimo 8.9 %, en series pequeñas de tiendas express).
+* `hgb_relativo` vs `hgb_directo`: diferencia de 0.4 % (gana en 5 de 7 cortes).
+  Se elige `hgb_relativo` porque, además, su diseño se adapta a cambios de nivel
+  de la demanda, que el enunciado anticipa para el periodo de evaluación.
+
+## 7. Cantidad sugerida
+
+* Minimizar `cf·(real − s)⁺ + cs·(s − real)⁺` equivale a minimizar la pérdida
+  cuantílica con **τ = cf / (cf + cs)**: el óptimo es el cuantil τ de la
+  demanda. τ va de 0.286 (panadería: sobrar cuesta 2.5) a 0.952 (licores:
+  faltar cuesta 20× más que sobrar). Demostración en `ml/costos.py`.
+* La demanda de cada fila se representa con muestras `pred · r_i`, donde r_i =
+  real/pred son residuos **fuera de muestra** de la familia en los 56 días previos
+  al corte (el modelo de calibración se entrenó antes de esa ventana).
+* Como el costo es convexo, la cantidad **entera** óptima es floor(q) o ceil(q);
+  se evalúan ambas y se elige la de menor costo empírico. (Una primera versión
+  usaba siempre ceil(q); la prueba exhaustiva mostró que no es óptima con
+  muestras continuas y se corrigió.)
+* Pruebas: mínimo frente a búsqueda exhaustiva (300 casos y por fila del
+  calibrador), costo esperado exacto con Poisson, τ propio mejor que otros τ
+  fuera de muestra, enteros ≥ 0.
+* **Evidencia en el backtesting:** la cobertura real P(real ≤ sugerido)
+  coincide con τ en todas las familias (p. ej. licores 0.951 vs τ 0.952,
+  panadería 0.290 vs 0.286). Frente a sugerir la venta esperada redondeada, el
+  costo baja 23.5 % (821 651 → 628 813).
+* Estrategias comparadas sobre el mismo modelo: multiplicativa o tipo Poisson
+  (`raiz`), por familia o por tipo de tienda × familia, y cuantiles directos con
+  HGB cuantílico. Las cinco quedan dentro del 1.4 % entre sí; se elige
+  **`mult_familia`**: la más simple, la de menor costo total y primera en 4 de 7 cortes.
+
+## 8. Tiempos
+
+Entrenamiento de producción completo (modelo de calibración + modelo final +
+calibrador) con todo el histórico: **14 s**. Predicción de una tienda: 0.12 s.
+Holgado para el límite de 10 minutos por reentrenamiento.
+
 ## Pendientes de decidir (etapas siguientes)
 
 * Umbral de antigüedad de observaciones para advertir (D3), etapa 4.
-* Advertir `en_promocion` fuera del rango histórico (p. ej. > 3× el máximo
-  observado). Requiere estadísticas del histórico; etapa 2/4.
+* **Promociones atípicas (propuesta):** advertir cuando `en_promocion` supere el
+  máximo histórico de su familia (7 en panadería a 19 en abarrotes,
+  `Pronosticador.info["promocion_max_familia"]`), conservando el valor. Motivo:
+  el p99.9 está a 1–2 unidades del máximo, de modo que superarlo es realmente
+  inusual, y los árboles no extrapolan: más allá del máximo el modelo responde
+  como si fuera el máximo, que es justamente el supuesto que debe informarse.
+* Promoción de los días registrados por observaciones al reentrenar
+  (las observaciones no la incluyen): tomarla de la solicitud de predicción de
+  ese día; sin solicitud, excluir esa fila del entrenamiento pero usar su venta
+  en los rezagos. Etapas 3 y 7.

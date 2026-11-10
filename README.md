@@ -6,7 +6,7 @@ sobrantes, se defiende de datos defectuosos, registra la operación y se
 reentrena automáticamente.
 
 > **Estado:** etapas 0–1 completadas (repositorio, dependencias, capa de calidad
-> de datos y esquemas del contrato). La API, la base de datos, MLflow, Airflow y
+> de datos y esquemas del contrato); etapa 2 (modelos y backtesting) en revisión. La API, la base de datos, MLflow, Airflow y
 > Docker Compose se agregan en las etapas siguientes; este README se actualizará
 > con las instrucciones de `docker compose up` cuando existan.
 
@@ -44,15 +44,29 @@ python -m pytest -q
 Las pruebas no requieren MLflow ni la base de datos. Las de `tests/ejemplos/`
 usan `raw/ejemplos` y se omiten si esa carpeta no existe.
 
+## Experimento de modelos (etapa 2)
+
+```bash
+python -m scripts.experimento_etapa2 --raw raw --salida reportes/etapa2
+```
+
+Ejecuta el backtesting temporal (7 cortes de 28 días) del baseline y los
+modelos de ML con varias estrategias de cantidad sugerida y escribe las tablas
+en `reportes/etapa2/` (`resultados.md` y CSV). No registra nada en MLflow.
+
 ## Estructura actual
 
 ```
 app/
   calidad/        limpieza de datos: reparar / advertir / rechazar
   schemas/        modelos Pydantic del contrato
+ml/               variables, modelos, costo y cantidad sugerida, backtesting
+scripts/          experimentos reproducibles
+reportes/etapa2/  resultados del backtesting
 requirements/     comun.txt, api.txt, dev.txt (versiones fijas)
 tests/
   unit/           pruebas por módulo y de robustez
+  ml/             sin fuga temporal, costo/cuantil, modelos y backtesting
   ejemplos/       política sobre los ejemplos publicados
 AGENTS.md         contexto para agentes de programación
 DECISIONES.md     decisiones técnicas y política de calidad de datos
