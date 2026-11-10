@@ -5,9 +5,8 @@ import pandas as pd
 import pytest
 
 from ml.calendario import Calendario
-from ml.datos import CLAVE, consolidar_promociones, discrepancias_promocion, filas_supervisadas
+from ml.datos import CLAVE, consolidar_promociones, consolidar_ventas, discrepancias_promocion, filas_supervisadas
 from ml.pronosticador import ConfigEntrenamiento, Pronosticador, preparar
-
 from tests.ml.sinteticos import FAMILIAS, generar
 
 DATOS = generar()
@@ -231,3 +230,57 @@ def test_maximos_ignoran_filas_sin_promocion_conocida():
     assert p.maximos_promocion == esperado
     assert all(isinstance(v, int) for v in p.maximos_promocion.values())
     assert np.isfinite(list(p.maximos_promocion.values())).all()
+
+
+# ------------------------------------------------------- consolidar_ventas
+def test_ventas_observacion_completa_fechas_sin_historico():
+    nuevas = H[H["fecha"] >= DESDE][CLAVE + ["ventas"]]
+    v = consolidar_ventas(H[H["fecha"] < DESDE], nuevas)
+    assert len(v) == len(H) and set(v.loc[v["fecha"] >= DESDE, "origen"]) == {"observacion"}
+    assert not v["discrepancia"].any()
+
+
+def test_ventas_coincidencia_y_conflicto_con_el_historico(caplog):
+    fila = H[H["fecha"] == DESDE - pd.Timedelta(days=1)].head(2)[CLAVE + ["ventas"]].reset_index(drop=True)
+    obs = fila.copy()
+    obs.loc[1, "ventas"] = obs.loc[1, "ventas"] + 10          # la segunda difiere
+    with caplog.at_level("WARNING", logger="ml.datos"):
+        v = consolidar_ventas(H[H["fecha"] < DESDE], obs).merge(fila[CLAVE], on=CLAVE)
+    assert (v["origen"] == "historico").all()
+    assert v["ventas"].tolist() == fila["ventas"].tolist()          # manda el histórico
+    assert v["ventas_observacion"].tolist() == obs["ventas"].tolist()  # no se descarta en silencio
+    assert v["discrepancia"].tolist() == [False, True]
+    assert "1 claves con histórico y observación distintos" in caplog.text
+
+
+def test_ventas_sin_observaciones():
+    v = consolidar_ventas(H)
+    assert len(v) == len(H) and not v["discrepancia"].any() and v["ventas_observacion"].isna().all()
+
+
+def test_ventas_consolidadas_sirven_para_entrenar():
+    obs = H[H["fecha"] >= DESDE][CLAVE + ["ventas"]]
+    ventas = consolidar_ventas(H[H["fecha"] < DESDE], obs)
+    X, y, sin_promo = preparar(ventas, consolidar_promociones(PROMOS_HIST), DATOS.tiendas, CAL, FAMILIAS)
+    assert sin_promo == len(obs) and len(X) == len(PROMOS_HIST)
+
+
+def test_consolidacion_de_ventas_es_determinista_ante_el_orden_de_entrada():
+    obs = H[H["fecha"] >= DESDE - pd.Timedelta(days=3)][CLAVE + ["ventas"]].copy()
+    obs.loc[obs.index[:5], "ventas"] += 1                    # algunas discrepancias
+    base = consolidar_ventas(H[H["fecha"] < DESDE], obs)
+    for semilla in range(5):
+        otra = consolidar_ventas(H[H["fecha"] < DESDE].sample(frac=1, random_state=semilla),
+                                 obs.sample(frac=1, random_state=semilla + 100))
+        pd.testing.assert_frame_equal(base, otra)
+    assert base["discrepancia"].sum() == 5
+
+
+def test_consolidacion_de_promociones_es_determinista_ante_el_orden_de_entrada():
+    sol = pd.concat([solicitudes(H[H["fecha"] >= DESDE].assign(en_promocion=1), "2025-05-01T07:00"),
+                     solicitudes(H[H["fecha"] >= DESDE].assign(en_promocion=2), "2025-05-01T09:00")])
+    base = consolidar_promociones(PROMOS_HIST, sol)
+    for semilla in range(5):
+        otra = consolidar_promociones(PROMOS_HIST.sample(frac=1, random_state=semilla),
+                                      sol.sample(frac=1, random_state=semilla))
+        pd.testing.assert_frame_equal(base, otra)

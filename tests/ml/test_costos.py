@@ -5,8 +5,16 @@ import pandas as pd
 import pytest
 from scipy import stats
 
-from ml.costos import (CalibradorCuantil, a_entero_no_negativo, cantidad_optima, cantidad_redondeo,
-                       costo, cuantil, perdida_cuantil, taus)
+from ml.costos import (
+    CalibradorCuantil,
+    a_entero_no_negativo,
+    cantidad_optima,
+    cantidad_redondeo,
+    costo,
+    cuantil,
+    perdida_cuantil,
+    taus,
+)
 
 COSTOS_LAB = pd.DataFrame({
     "familia_id": ["abarrotes", "lacteos", "carnes", "panaderia", "frutas_verduras", "licores"],

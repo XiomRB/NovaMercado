@@ -29,3 +29,7 @@ mlartifacts/
 .vscode/
 .idea/
 .DS_Store
+
+# Herramientas de calidad y reportes de la CI
+.ruff_cache/
+reportes-ci/

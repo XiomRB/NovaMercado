@@ -46,3 +46,19 @@ def generar(dias: int = 160, semilla: int = 0, apertura_tienda_3: int = 130) -> 
     historico = pd.DataFrame(filas, columns=["fecha", "tienda_id", "familia_id", "ventas", "en_promocion"])
     familias = pd.DataFrame({"familia_id": FAMILIAS, "nombre": ["A", "B", "C"]})
     return DatosBase(historico, tiendas, familias, COSTOS.copy(), feriados)
+
+
+def escribir_carpeta(datos: DatosBase, carpeta) -> None:
+    """Escribe ``datos`` con el formato de los archivos publicados (raw/)."""
+    from pathlib import Path
+    carpeta = Path(carpeta)
+    carpeta.mkdir(parents=True, exist_ok=True)
+    iso = "%Y-%m-%d"
+    datos.historico.assign(fecha=datos.historico["fecha"].dt.strftime(iso)).to_csv(
+        carpeta / "historico_ventas.csv", index=False)
+    datos.tiendas.assign(fecha_apertura=datos.tiendas["fecha_apertura"].dt.strftime(iso)).to_csv(
+        carpeta / "tiendas.csv", index=False)
+    datos.familias.to_csv(carpeta / "familias.csv", index=False)
+    datos.costos.to_csv(carpeta / "costos.csv", index=False)
+    datos.feriados.assign(fecha=datos.feriados["fecha"].dt.strftime(iso)).to_csv(
+        carpeta / "feriados.csv", index=False)

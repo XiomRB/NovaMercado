@@ -1,0 +1,50 @@
+# NovaMercado — servicios de datos (etapa 3).
+# La API, MLflow y Airflow se agregan en las etapas 5–7.
+#
+# Uso:  cp .env.example .env   (y cambie las claves)
+#       docker compose up -d
+#
+# Las credenciales vienen de .env (excluido de git); compose falla si faltan.
+
+name: novamercado
+
+services:
+  # Base de datos del PRODUCTO: solicitudes, predicciones, observaciones y datos publicados.
+  db:
+    image: postgres:16.14-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?defina POSTGRES_DB en .env}
+      POSTGRES_USER: ${POSTGRES_USER:?defina POSTGRES_USER en .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD en .env}
+    volumes:
+      - db_producto:/var/lib/postgresql/data
+    ports:
+      # Solo en localhost: para migraciones, carga y pruebas desde el equipo
+      - "127.0.0.1:${PRODUCTO_DB_PUERTO_HOST:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Base de datos de AIRFLOW (etapa 7): servicio, volumen y credenciales propios.
+  # El producto nunca se conecta a ella.
+  airflow-db:
+    image: postgres:16.14-alpine
+    environment:
+      POSTGRES_DB: ${AIRFLOW_DB_NAME:?defina AIRFLOW_DB_NAME en .env}
+      POSTGRES_USER: ${AIRFLOW_DB_USER:?defina AIRFLOW_DB_USER en .env}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:?defina AIRFLOW_DB_PASSWORD en .env}
+    volumes:
+      - db_airflow:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  db_producto:
+  db_airflow:

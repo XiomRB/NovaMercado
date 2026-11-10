@@ -30,8 +30,17 @@ MLflow. Todo se levanta con `docker compose up`.
 ```bash
 conda activate lab2            # Python 3.11
 pip install -r requirements/dev.txt
-python -m pytest -q
+ruff check .
+python -m pytest -q -m "not integracion"
+bash scripts/pruebas_integracion_local.sh      # requiere Docker
 ```
+
+## Flujo de trabajo (obligatorio)
+
+* Nunca commits en `main`; una rama por etapa desde el último `main` fusionado.
+* Al terminar: publicar la rama, abrir PR hacia `main` y detenerse. El usuario
+  revisa y fusiona; nunca aprobar, fusionar ni cerrar PR.
+* El check obligatorio es **CI resultado** (`.github/workflows/ci.yml`).
 
 Versiones fijadas alineadas con las constraints de Airflow 2.10.5 / Python 3.11
 (ver `DECISIONES.md` §1). No cambiar numpy/pandas/pydantic/SQLAlchemy sin revisar
@@ -52,8 +61,8 @@ esas constraints.
 |---|---|
 | 0 Repositorio y dependencias | hecho |
 | 1 Calidad de datos + esquemas Pydantic | hecho (pruebas en `tests/unit`, `tests/ejemplos`) |
-| 2 ML offline (baseline, modelo, backtest) | hecho (PR #1); ajustes en `fix/etapa-2-ajustes` |
-| 3 Persistencia PostgreSQL | pendiente |
+| 2 ML offline (baseline, modelo, backtest) | hecho (PR #1 y #2) |
+| 3 Persistencia PostgreSQL + CI | en revisión (`feat/etapa-3-persistencia`) |
 | 4 API FastAPI | pendiente |
 | 5 MLflow (registro, alias, recarga, health) | pendiente |
 | 6 Docker Compose + bootstrap | pendiente |
@@ -68,6 +77,8 @@ app/calidad/   resultado.py (acciones, estado, rechazo), texto.py, numeros.py,
                fechas.py, campos.py (E07), catalogo.py (E02), comunes.py,
                prediccion.py, observaciones.py
 app/schemas/   contrato.py (Pydantic del Anexo)
+app/db/        esquema.py, conexion.py, carga.py, repositorio.py
+migraciones/   Alembic
 ml/           datos.py (carga raw/), calendario.py (feriados), features.py (variables
               sin fuga), modelos.py (baseline + HGB), costos.py (costo, τ, cantidad
               óptima, calibrador), pronosticador.py (entrenamiento compartido
@@ -75,9 +86,27 @@ ml/           datos.py (carga raw/), calendario.py (feriados), features.py (vari
 scripts/      experimento_etapa2.py (backtesting -> reportes/etapa2/)
 tests/unit/    pruebas por módulo + robustez (fuzzing determinista)
 tests/ml/      sin fuga, costo/cuantil, baseline, backtest (datos sintéticos)
+tests/integracion/ PostgreSQL real (TEST_DATABASE_URL), base nueva por prueba
 tests/ejemplos/ un ejemplo sintético por caso E01–E10 (tests/fixtures/ejemplos)
 tests/fixtures/ catálogo y ejemplos sintéticos: las pruebas nunca leen raw/
 ```
+
+## Reglas de persistencia
+
+* Esquema en `app/db/esquema.py`; todo cambio requiere una migración nueva en
+  `migraciones/versions/` (nunca editar una ya fusionada). Una prueba compara el
+  esquema migrado con el modelo.
+* Tablas de solo inserción (triggers): solicitudes, familias de la solicitud,
+  predicciones, envíos, historial, calidad y ventas históricas.
+  `observaciones` admite `UPDATE` (corrección) con fila en el historial.
+  Una solicitud rechazada no admite familias/predicciones y un envío rechazado
+  no crea ni modifica observaciones (triggers de coherencia).
+* Escribir solo mediante `app/db/repositorio.py` dentro de
+  `app.db.conexion.transaccion` (una unidad de trabajo por solicitud HTTP).
+* Idempotencia de observaciones: clave (fecha, tienda, familia) + advisory lock
+  por (tienda, fecha). `registros_guardados` = nuevos + modificados.
+* Las pruebas de integración crean bases desechables a partir de
+  `TEST_DATABASE_URL`; jamás apuntarla a la base del producto.
 
 ## Reglas de ML
 

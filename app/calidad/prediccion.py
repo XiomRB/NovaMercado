@@ -14,8 +14,7 @@ from pydantic import ValidationError
 
 from app.calidad.campos import ESQUEMA_PREDICCION, ESQUEMA_PREDICCION_ITEM, normalizar_campos
 from app.calidad.catalogo import Catalogo
-from app.calidad.comunes import (exigir_campo, exigir_objeto, limpiar_fecha, limpiar_tienda,
-                                 normalizar_lista)
+from app.calidad.comunes import exigir_campo, exigir_objeto, limpiar_fecha, limpiar_tienda, normalizar_lista
 from app.calidad.numeros import NumeroInvalido, describir, interpretar_numero, redondear
 from app.calidad.resultado import RegistroCalidad, SolicitudRechazada
 from app.schemas.contrato import SolicitudPrediccion

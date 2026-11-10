@@ -10,7 +10,6 @@ import json
 import pytest
 
 from app.calidad import SolicitudRechazada, limpiar_solicitud_observacion, limpiar_solicitud_prediccion
-
 from tests.conftest import FIXTURES
 
 EJEMPLOS = FIXTURES / "ejemplos"

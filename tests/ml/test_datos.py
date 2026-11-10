@@ -4,21 +4,12 @@ import pandas as pd
 import pytest
 
 from ml.datos import COLUMNAS, cargar_raw
-
-from tests.ml.sinteticos import generar
+from tests.ml.sinteticos import escribir_carpeta, generar
 
 
 @pytest.fixture
 def carpeta(tmp_path):
-    d = generar(dias=40)
-    h = d.historico.assign(fecha=d.historico["fecha"].dt.strftime("%Y-%m-%d"))
-    h.to_csv(tmp_path / "historico_ventas.csv", index=False)
-    d.tiendas.assign(fecha_apertura=d.tiendas["fecha_apertura"].dt.strftime("%Y-%m-%d")).to_csv(
-        tmp_path / "tiendas.csv", index=False)
-    d.familias.to_csv(tmp_path / "familias.csv", index=False)
-    d.costos.to_csv(tmp_path / "costos.csv", index=False)
-    d.feriados.assign(fecha=d.feriados["fecha"].dt.strftime("%Y-%m-%d")).to_csv(
-        tmp_path / "feriados.csv", index=False)
+    escribir_carpeta(generar(dias=40), tmp_path)
     return tmp_path
 
 

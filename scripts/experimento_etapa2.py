@@ -109,7 +109,8 @@ def main() -> None:
         "",
         f"* Histórico: {h.fecha.min().date()} a {fin.date()}.",
         f"* {a.folds} cortes con ventanas de prueba consecutivas de {a.horizonte} días: "
-        f"{cortes[0].date()} a {fin.date()} ({a.folds * a.horizonte} días, {len(d) // d.groupby(['modelo','estrategia']).ngroups:,} filas por combinación).",
+        f"{cortes[0].date()} a {fin.date()} ({a.folds * a.horizonte} días, "
+        f"{len(d) // d.groupby(['modelo', 'estrategia']).ngroups:,} filas por combinación).",
         "* En cada corte C: entrenamiento con fechas < C, calibración con residuos fuera de muestra de "
         "[C−56, C), prueba en [C, C+28) sin reentrenar.",
         "",

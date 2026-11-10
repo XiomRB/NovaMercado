@@ -4,7 +4,6 @@ import pytest
 
 from app.calidad import SolicitudRechazada, limpiar_solicitud_prediccion
 from app.schemas.contrato import Calidad
-
 from tests.conftest import FAMILIAS
 
 
