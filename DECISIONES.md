@@ -264,22 +264,66 @@ Las observaciones de ventas reales no traen `en_promocion`. Al reentrenar:
 
 * **Ventas** (histórico + observaciones) → alimentan todas las variables
   históricas (rezagos, medias), tengan o no promoción conocida.
-* **Ejemplos de entrenamiento** → solo filas con venta y promoción conocidas
-  (`ml.datos.filas_supervisadas`). Una observación sin promoción se excluye
-  como ejemplo, pero su venta sí cuenta en los rezagos de los días siguientes.
-* **Origen de la promoción** (`ml.datos.consolidar_promociones`):
-  1. `historico_ventas.csv` tiene prioridad (dato oficial);
-  2. si no, la solicitud de predicción de esa tienda y fecha; si hubo varias,
-     la **última** registrada;
-  3. las promociones **supuestas** por la capa de calidad (faltantes o no
-     válidas, `RegistroCalidad.promociones_supuestas`) se descartan: no son
-     dato real.
-* Se prueba que con promociones de solicitudes iguales a las reales el modelo
-  es idéntico al entrenado con el histórico completo, y que sin ellas esas
-  filas no se entrenan pero sí aparecen en `lag_1`.
+* **Ejemplos de entrenamiento** → solo filas con venta **y promoción real**
+  conocidas (`ml.datos.filas_supervisadas`). Una venta sin promoción real (sin
+  solicitud, o solo con promociones supuestas) no es ejemplo supervisado, pero
+  su venta sí cuenta en los rezagos y medias de los días siguientes.
+
+### Promoción real vs supuesta
+
+* **Real:** la recibida de forma utilizable en la solicitud (aunque se haya
+  reparado, p. ej. `"3"` → 3, o redondeado, 2.5 → 3: deriva del dato enviado).
+* **Supuesta:** la que completó la capa de calidad porque faltaba la familia
+  (D1), faltaba el campo o el valor era nulo, no numérico o negativo (se usó 0).
+  `limpiar_solicitud_prediccion` las informa en
+  `RegistroCalidad.promociones_supuestas`. Sirven para responder la predicción
+  de ese día (con advertencia), pero **nunca** como dato de entrenamiento ni
+  para detectar discrepancias.
+
+### Origen de la promoción (`ml.datos.consolidar_promociones`)
+
+1. **Histórico:** `en_promocion` de `historico_ventas.csv` es, según el
+   enunciado, el número de productos en promoción registrado junto con la venta
+   real de ese día (sin nulos ni marcas de imputación): se trata como la
+   promoción **observada** y tiene prioridad.
+2. **Solicitud:** si no hay valor histórico, la última solicitud con promoción
+   real para esa tienda, fecha y familia.
+   * **"Última"** = mayor `registrado_en`; empate → mayor `solicitud_id`. Es un
+     orden total y determinista: no depende del orden de inserción ni del orden
+     de las filas recibidas. Si faltan esas columnas o tienen nulos, se lanza un
+     error en vez de suponer un orden.
+3. **Conflicto** (histórico y solicitud existen y difieren): se usa el
+   histórico, pero el valor de la solicitud **no se descarta en silencio**:
+   queda en `en_promocion_solicitud`, la fila se marca con `discrepancia=True`
+   (`ml.datos.discrepancias_promocion`), se registra una advertencia en el log
+   y `Pronosticador.info["discrepancias_promocion"]` cuenta las del
+   entrenamiento. Una promoción supuesta nunca genera discrepancia.
+
+Pruebas (`tests/ml/test_reentrenamiento.py`): orden por `registrado_en` con
+cualquier orden de entrada, desempate por `solicitud_id`, varias tiendas del
+mismo día, columnas obligatorias, supuesta ignorada aunque sea la última,
+coincidencia, conflicto (con log y conteo en el entrenamiento), ausencia de
+histórico, supuesta excluida como ejemplo pero presente en `lag_1`, y
+equivalencia con el histórico completo. Verificado por mutación: ignorar
+`registrado_en` o no marcar discrepancias hace fallar las pruebas.
+
+### Contrato de datos para la persistencia (etapa 3)
+
+`consolidar_promociones` recibe una fila por familia de cada solicitud con
+(`COLUMNAS_SOLICITUDES`):
+
+| Columna | Tipo | Origen |
+|---|---|---|
+| `solicitud_id` | entero creciente, único por solicitud | clave primaria asignada por PostgreSQL |
+| `registrado_en` | timestamp con zona | momento en que el servicio registró la solicitud |
+| `fecha`, `tienda_id`, `familia_id` | fecha, entero, texto | solicitud ya limpia |
+| `en_promocion` | entero ≥ 0 | valor usado para predecir |
+| `promocion_supuesta` | booleano, no nulo | `familia_id in RegistroCalidad.promociones_supuestas` |
+
+`registrado_en` solo ordena las solicitudes recibidas (auditoría); **nunca**
+se usa para validar la `fecha` solicitada, que es simulada.
 
 ## Pendientes de decidir (etapas siguientes)
 
 * Umbral de antigüedad de observaciones para advertir (D3), etapa 4.
-* Persistir `promocion_supuesta` y `registrado_en` de cada solicitud (etapa 3),
-  necesarios para `consolidar_promociones`.
+* Persistir las columnas del contrato anterior en la etapa 3.

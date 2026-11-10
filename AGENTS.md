@@ -89,8 +89,13 @@ tests/fixtures/ catálogo y ejemplos sintéticos: las pruebas nunca leen raw/
 * La cantidad sugerida la decide `CalibradorCuantil.sugerir` (óptimo entero del
   costo empírico con τ de la familia). No reemplazarla por un redondeo.
 * Reentrenar = `Pronosticador.entrenar(ventas, promociones, ...)`: las ventas
-  alimentan los rezagos; solo las filas con promoción conocida son ejemplos
+  alimentan los rezagos; solo las filas con promoción **real** son ejemplos
   (`ml/datos.py: consolidar_promociones, filas_supervisadas`).
+* Promociones: histórico > última solicitud real (`registrado_en`, desempate
+  `solicitud_id`); las supuestas (`RegistroCalidad.promociones_supuestas`) nunca
+  se entrenan; un conflicto histórico/solicitud se marca (`discrepancia`), no se
+  descarta en silencio. La etapa 3 debe persistir `COLUMNAS_SOLICITUDES`
+  (DECISIONES.md §10).
 * `Pronosticador.maximos_promocion` (máximo por familia en entrenamiento) se pasa
   a `limpiar_solicitud_prediccion(..., maximos_promocion=...)` para advertir
   promociones atípicas sin modificarlas.
