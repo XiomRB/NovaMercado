@@ -52,7 +52,7 @@ esas constraints.
 |---|---|
 | 0 Repositorio y dependencias | hecho |
 | 1 Calidad de datos + esquemas Pydantic | hecho (pruebas en `tests/unit`, `tests/ejemplos`) |
-| 2 ML offline (baseline, modelo, backtest) | pendiente |
+| 2 ML offline (baseline, modelo, backtest) | en revisión (PR `feat/etapa-2-modelos`) |
 | 3 Persistencia PostgreSQL | pendiente |
 | 4 API FastAPI | pendiente |
 | 5 MLflow (registro, alias, recarga, health) | pendiente |
@@ -68,6 +68,24 @@ app/calidad/   resultado.py (acciones, estado, rechazo), texto.py, numeros.py,
                fechas.py, campos.py (E07), catalogo.py (E02), comunes.py,
                prediccion.py, observaciones.py
 app/schemas/   contrato.py (Pydantic del Anexo)
+ml/           datos.py (carga raw/), calendario.py (feriados), features.py (variables
+              sin fuga), modelos.py (baseline + HGB), costos.py (costo, τ, cantidad
+              óptima, calibrador), pronosticador.py (entrenamiento compartido
+              producción/backtest), backtest.py, metricas.py
+scripts/      experimento_etapa2.py (backtesting -> reportes/etapa2/)
 tests/unit/    pruebas por módulo + robustez (fuzzing determinista)
+tests/ml/      sin fuga, costo/cuantil, baseline, backtest (datos sintéticos)
 tests/ejemplos/ ejemplos publicados de raw/ejemplos (se omite si no existen)
 ```
+
+## Reglas de ML
+
+* Toda variable de la fila con fecha F se deriva de `wide.shift(k)`, k >= 1, en
+  `ml/features.py`. No agregar variables que lean ventas del día F ni promociones
+  de días pasados (las observaciones no traen promociones).
+* Producción y backtest usan las mismas funciones (`ml/pronosticador.py`); una
+  prueba verifica que den resultados idénticos. No duplicar lógica.
+* La cantidad sugerida la decide `CalibradorCuantil.sugerir` (óptimo entero del
+  costo empírico con τ de la familia). No reemplazarla por un redondeo.
+* Con la CPU ocupada el backtesting completo tarda ~10–15 min; las pruebas de
+  `tests/ml` usan datos sintéticos y `max_iter` reducido.
