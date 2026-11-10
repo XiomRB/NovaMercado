@@ -45,6 +45,10 @@ class Observacion:
 @dataclass
 class RegistroCalidad:
     observaciones: list[Observacion] = field(default_factory=list)
+    # Familias cuya promoción se supuso (no se recibió un valor utilizable). No se
+    # informa en la respuesta (ya hay una observación ``advertir``); sirve para no
+    # usar esos valores como dato real al reentrenar.
+    promociones_supuestas: set[str] = field(default_factory=set)
 
     def reparar(self, campo: str, detalle: str) -> None:
         self.observaciones.append(Observacion(campo, REPARAR, detalle))
