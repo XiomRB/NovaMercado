@@ -1,0 +1,31 @@
+# Enunciado y anexo del curso: NO se publican
+instrucciones_lab2.md
+Anexo_ContratoDeServicio.md
+
+# Datos publicados (se colocan manualmente en raw/, ver README.md)
+raw/
+data/
+
+# Credenciales
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+.venv/
+venv/
+
+# MLflow / artefactos locales
+mlruns/
+mlartifacts/
+*.joblib
+*.pkl
+
+# Editores / SO
+.vscode/
+.idea/
+.DS_Store

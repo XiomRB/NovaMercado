@@ -1,0 +1,12 @@
+# Dependencias compartidas por la API, el bootstrap y las tareas de Airflow.
+# Las versiones de numpy, pandas, pydantic, SQLAlchemy y psycopg2 coinciden con
+# las constraints oficiales de Apache Airflow 2.10.5 / Python 3.11, para que el
+# modelo serializado en Airflow se cargue en la API con las mismas bibliotecas.
+numpy==1.26.4
+pandas==2.1.4
+scipy==1.15.2
+scikit-learn==1.6.1
+pydantic==2.10.6
+SQLAlchemy==1.4.54
+psycopg2-binary==2.9.10
+requests==2.32.3
