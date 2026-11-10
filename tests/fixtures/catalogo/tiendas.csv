@@ -1,0 +1,4 @@
+tienda_id,nombre,ciudad,departamento,tipo,fecha_apertura
+1,Tienda de prueba 1,Guatemala,Guatemala,hipermercado,2019-01-01
+5,Tienda de prueba 5,Quetzaltenango,Quetzaltenango,hipermercado,2019-01-01
+10,Tienda de prueba 10,Guatemala,Guatemala,express,2025-03-15

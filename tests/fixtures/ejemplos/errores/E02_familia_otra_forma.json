@@ -1,0 +1,54 @@
+{
+  "tienda_id": 5,
+  "fecha": "2026-04-14",
+  "familias": [
+    {
+      "familia_id": "abarrotes",
+      "en_promocion": 3
+    },
+    {
+      "familia_id": "bebe",
+      "en_promocion": 0
+    },
+    {
+      "familia_id": "bebidas",
+      "en_promocion": 5
+    },
+    {
+      "familia_id": "carnes",
+      "en_promocion": 0
+    },
+    {
+      "familia_id": "cuidado_personal",
+      "en_promocion": 0
+    },
+    {
+      "familia_id": "Frutas y Verduras",
+      "en_promocion": 0
+    },
+    {
+      "familia_id": "LÁCTEOS",
+      "en_promocion": 0
+    },
+    {
+      "familia_id": "licores",
+      "en_promocion": 0
+    },
+    {
+      "familia_id": "limpieza",
+      "en_promocion": 0
+    },
+    {
+      "familia_id": "mascotas",
+      "en_promocion": 0
+    },
+    {
+      "familia_id": "panaderia",
+      "en_promocion": 0
+    },
+    {
+      "familia_id": "snacks",
+      "en_promocion": 2
+    }
+  ]
+}
