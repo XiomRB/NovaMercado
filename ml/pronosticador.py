@@ -27,7 +27,7 @@ import pandas as pd
 
 from ml.calendario import Calendario
 from ml.costos import CalibradorCuantil, a_entero_no_negativo, cantidad_redondeo, taus
-from ml.datos import filas_supervisadas
+from ml.datos import discrepancias_promocion, filas_supervisadas
 from ml.features import construir_features
 from ml.modelos import ModeloHGB, crear_modelo
 
@@ -156,7 +156,8 @@ class Pronosticador:
         # Máximo de promociones por familia en los ejemplos de entrenamiento (< corte)
         maximos = {f: int(m) for f, m in X.groupby("familia_id")["en_promocion"].max().items()}
         info.update(filas_sin_promocion=int(sin_promo), filas_ventas=int(len(v)),
-                    maximos_promocion=maximos)
+                    maximos_promocion=maximos,
+                    discrepancias_promocion=int(len(discrepancias_promocion(p))))
         return cls(config, modelo, calibrador, cal, tiendas.copy(), list(familias), maximos, info)
 
     def predecir(self, objetivos: pd.DataFrame, ventas: pd.DataFrame) -> pd.DataFrame:
