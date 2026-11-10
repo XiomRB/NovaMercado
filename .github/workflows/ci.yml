@@ -1,0 +1,147 @@
+# Integración continua de NovaMercado. Documentación: README.md, sección "Integración continua".
+#
+# Se ejecuta en cada PR hacia main (al abrirlo y con cada push a su rama) y en cada push a main.
+# No despliega ni publica imágenes. No contiene credenciales:
+#   * el PostgreSQL de servicio usa autenticación "trust" (solo accesible dentro del runner);
+#   * la verificación con Docker Compose genera claves aleatorias en el momento y las enmascara.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.11"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  calidad:
+    name: Formato y calidad (ruff)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Instalar ruff (versión de requirements/dev.txt)
+        run: pip install "$(grep -E '^ruff==' requirements/dev.txt)"
+      - name: ruff check
+        run: ruff check --output-format=github .
+
+  pruebas:
+    name: Pruebas unitarias y de regresión
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+      - name: Instalar dependencias
+        run: pip install -r requirements/dev.txt && pip check
+      - name: Verificar que no se usan datos locales
+        run: test ! -e raw
+      - name: pytest (calidad, contrato, ML; etapas 1-3 sin base de datos)
+        run: python -m pytest -m "not integracion" -q --junitxml=reportes-ci/unitarias.xml
+      - name: Resumen
+        if: always()
+        run: python .github/scripts/resumen_junit.py reportes-ci/unitarias.xml "Pruebas unitarias y de regresión" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: junit-unitarias
+          path: reportes-ci/
+          retention-days: 14
+
+  integracion:
+    name: Pruebas de integración (PostgreSQL)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16.14-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg2://postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+      - name: Instalar dependencias
+        run: pip install -r requirements/dev.txt
+      - name: Migraciones (upgrade, downgrade, upgrade) en una base limpia
+        env:
+          DATABASE_URL: postgresql+psycopg2://postgres@localhost:5432/postgres
+        run: alembic upgrade head && alembic downgrade base && alembic upgrade head && alembic current
+      - name: pytest -m integracion
+        run: python -m pytest -m integracion -q --junitxml=reportes-ci/integracion.xml
+      - name: Resumen
+        if: always()
+        run: python .github/scripts/resumen_junit.py reportes-ci/integracion.xml "Pruebas de integración" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: junit-integracion
+          path: reportes-ci/
+          retention-days: 14
+
+  persistencia:
+    name: Persistencia con Docker Compose
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+      - name: Instalar dependencias
+        run: pip install -r requirements/dev.txt
+      - name: Validar docker-compose.yml con .env.example
+        run: docker compose --env-file .env.example config --quiet
+      - name: Reinicio y down/up sin perder datos; bases separadas
+        run: bash scripts/verificar_persistencia_docker.sh
+
+  resultado:
+    name: CI resultado
+    if: always()
+    needs: [calidad, pruebas, integracion, persistencia]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Aprobar solo si todos los jobs pasaron
+        env:
+          RESULTADOS: ${{ toJSON(needs) }}
+        run: |
+          echo "## Resultado de la CI" >> "$GITHUB_STEP_SUMMARY"
+          echo "$RESULTADOS" | python3 -c '
+          import json, sys
+          r = json.load(sys.stdin)
+          filas = [f"| {k} | {v[\"result\"]} |" for k, v in r.items()]
+          print("| Job | Resultado |\n|---|---|\n" + "\n".join(filas))
+          sys.exit(0 if all(v["result"] == "success" for v in r.values()) else 1)
+          ' | tee -a "$GITHUB_STEP_SUMMARY"
