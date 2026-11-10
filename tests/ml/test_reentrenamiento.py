@@ -263,3 +263,24 @@ def test_ventas_consolidadas_sirven_para_entrenar():
     ventas = consolidar_ventas(H[H["fecha"] < DESDE], obs)
     X, y, sin_promo = preparar(ventas, consolidar_promociones(PROMOS_HIST), DATOS.tiendas, CAL, FAMILIAS)
     assert sin_promo == len(obs) and len(X) == len(PROMOS_HIST)
+
+
+def test_consolidacion_de_ventas_es_determinista_ante_el_orden_de_entrada():
+    obs = H[H["fecha"] >= DESDE - pd.Timedelta(days=3)][CLAVE + ["ventas"]].copy()
+    obs.loc[obs.index[:5], "ventas"] += 1                    # algunas discrepancias
+    base = consolidar_ventas(H[H["fecha"] < DESDE], obs)
+    for semilla in range(5):
+        otra = consolidar_ventas(H[H["fecha"] < DESDE].sample(frac=1, random_state=semilla),
+                                 obs.sample(frac=1, random_state=semilla + 100))
+        pd.testing.assert_frame_equal(base, otra)
+    assert base["discrepancia"].sum() == 5
+
+
+def test_consolidacion_de_promociones_es_determinista_ante_el_orden_de_entrada():
+    sol = pd.concat([solicitudes(H[H["fecha"] >= DESDE].assign(en_promocion=1), "2025-05-01T07:00"),
+                     solicitudes(H[H["fecha"] >= DESDE].assign(en_promocion=2), "2025-05-01T09:00")])
+    base = consolidar_promociones(PROMOS_HIST, sol)
+    for semilla in range(5):
+        otra = consolidar_promociones(PROMOS_HIST.sample(frac=1, random_state=semilla),
+                                      sol.sample(frac=1, random_state=semilla))
+        pd.testing.assert_frame_equal(base, otra)

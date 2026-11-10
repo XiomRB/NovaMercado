@@ -177,3 +177,99 @@ def test_relacion_prediccion_y_venta_real(bd):
     assert (t1["solicitud_id"] == r.solicitud_id).all() and (t1["version_modelo"] == "2").all()
     assert v[v["tienda_id"] == 2]["ventas_reales"].isna().all()
     assert str(v["fecha"].iloc[0].date()) == FECHA
+
+
+# ------------------------------------------- verificación: historial completo y atómico
+def test_historial_conserva_anterior_nuevo_envio_y_fecha_de_registro(bd):
+    observar(bd, payload_observacion())
+    r = observar(bd, payload_observacion(ventas={"fam_a": 300, "fam_b": 175, "fam_c": 60}))
+    with bd.connect() as c:
+        hist = c.execute(select(e.observaciones_historial)).one()
+        envio = c.execute(select(e.envios_observacion).where(e.envios_observacion.c.envio_id == r.envio_id)).one()
+        obs = c.execute(select(e.observaciones).where(e.observaciones.c.familia_id == "fam_b")).one()
+    assert (hist.ventas_anterior, hist.ventas_nueva, hist.envio_id) == (150, 175, r.envio_id)
+    assert hist.registrado_en is not None
+    # misma transacción: el historial, el envío y la modificación comparten el instante de registro
+    assert hist.registrado_en == envio.registrado_en == obs.modificado_en
+
+
+def test_modificacion_e_historial_son_atomicos(bd, monkeypatch):
+    """Si falla algo después del UPDATE y del historial, no queda ni la modificación ni el historial."""
+    import app.db.repositorio as repo
+    observar(bd, payload_observacion())
+
+    def falla(*a, **k):
+        raise RuntimeError("fallo simulado después de actualizar y registrar el historial")
+
+    monkeypatch.setattr(repo, "_insertar_calidad", falla)
+    with pytest.raises(RuntimeError, match="fallo simulado"):
+        observar(bd, payload_observacion(ventas={"fam_a": 300, "fam_b": 999, "fam_c": 60}))
+    with bd.connect() as c:
+        fam_b = c.execute(select(e.observaciones.c.ventas).where(e.observaciones.c.familia_id == "fam_b")).scalar()
+    assert fam_b == 150
+    assert contar(bd, e.observaciones_historial) == 0 and contar(bd, e.envios_observacion) == 1
+
+
+@pytest.mark.parametrize("sentencia", [
+    "INSERT INTO observaciones (fecha, tienda_id, familia_id, ventas, envio_id_creacion) "
+    "VALUES ('2025-06-21', 1, 'fam_a', 5, :rechazado)",
+    "UPDATE observaciones SET ventas = 1, envio_id_modificacion = :rechazado, modificado_en = now()",
+    "INSERT INTO observaciones_historial (fecha, tienda_id, familia_id, ventas_anterior, ventas_nueva, envio_id) "
+    "VALUES ('2025-06-20', 1, 'fam_a', 300, 1, :rechazado)",
+])
+def test_un_envio_rechazado_no_crea_ni_modifica_observaciones(bd, sentencia):
+    from sqlalchemy import text
+    observar(bd, payload_observacion())
+    with transaccion(bd) as c:
+        rechazado = registrar_rechazo_observacion(c, payload={}, detalle="x")
+    with pytest.raises(IntegrityError, match="no fue aceptado"):
+        with transaccion(bd) as c:
+            c.execute(text(sentencia), {"rechazado": rechazado})
+
+
+# ------------------------------------------- verificación: consolidación con la base
+def test_modificar_observaciones_no_altera_el_historico(bd):
+    from tests.integracion.apoyo import DATOS
+    with transaccion(bd) as c:
+        antes = leer_datos_base(c).historico
+    fila = DATOS.historico.iloc[0]
+    fecha = fila.fecha.date().isoformat()
+    for delta in (5, 9, 0):            # crear, modificar dos veces (la última igual al histórico)
+        observar(bd, payload_observacion(tienda=int(fila.tienda_id), fecha=fecha,
+                                         ventas={fila.familia_id: int(fila.ventas) + delta}))
+    with transaccion(bd) as c:
+        despues = leer_datos_base(c).historico
+        obs = leer_observaciones(c)
+    import pandas as pd
+    pd.testing.assert_frame_equal(antes, despues)            # el histórico no cambió
+    assert contar(bd, e.observaciones_historial) == 2
+    v = consolidar_ventas(despues, obs)
+    clave = (v["tienda_id"] == fila.tienda_id) & (v["familia_id"] == fila.familia_id) & (v["fecha"] == fila.fecha)
+    assert v.loc[clave, "ventas"].item() == fila.ventas and not v.loc[clave, "discrepancia"].item()
+
+
+def test_observaciones_sin_historico_se_conservan_y_se_pueden_usar(bd):
+    from ml.calendario import Calendario
+    from ml.pronosticador import preparar
+    observar(bd, payload_observacion())                       # 2025-06-20: no hay histórico
+    with transaccion(bd) as c:
+        base = leer_datos_base(c)
+        obs = leer_observaciones(c)
+    v = consolidar_ventas(base.historico, obs)
+    nuevas = v[v["origen"] == "observacion"]
+    assert len(nuevas) == 3 and set(nuevas["ventas"]) == {300, 150, 60}
+    X, _, sin_promo = preparar(v, base.historico, base.tiendas, Calendario(base.feriados),
+                               list(base.familias["familia_id"]))
+    assert sin_promo == 3 and len(X) == len(base.historico)  # sin promoción: rezagos sí, ejemplo no
+
+
+def test_consolidacion_desde_la_base_es_determinista(bd):
+    observar(bd, payload_observacion())
+    observar(bd, payload_observacion(tienda=2))
+    resultados = []
+    for _ in range(3):
+        with transaccion(bd) as c:
+            resultados.append(consolidar_ventas(leer_datos_base(c).historico, leer_observaciones(c)))
+    import pandas as pd
+    for r in resultados[1:]:
+        pd.testing.assert_frame_equal(resultados[0], r)
