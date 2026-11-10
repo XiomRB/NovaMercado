@@ -9,6 +9,12 @@ Dada una fecha de corte C (se entrena con datos de fechas < C):
 
 Ningún paso usa datos con fecha >= C. El backtesting llama exactamente a
 :func:`ajustar_con_calibracion` y :func:`sugerir`, igual que producción.
+
+Reentrenamiento con observaciones: las **ventas** (histórico + observaciones)
+alimentan todas las variables históricas; los **ejemplos de entrenamiento** son
+solo las filas con promoción conocida (histórico o solicitud de predicción
+registrada; ver :func:`ml.datos.consolidar_promociones`). Una observación sin
+promoción no se usa como ejemplo, pero su venta sí cuenta en los rezagos.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ import pandas as pd
 
 from ml.calendario import Calendario
 from ml.costos import CalibradorCuantil, a_entero_no_negativo, cantidad_redondeo, taus
+from ml.datos import discrepancias_promocion, filas_supervisadas
 from ml.features import construir_features
 from ml.modelos import ModeloHGB, crear_modelo
 
@@ -43,12 +50,16 @@ class ConfigEntrenamiento:
     params_hgb: dict = field(default_factory=dict)
 
 
-def preparar(ventas_con_promo: pd.DataFrame, tiendas: pd.DataFrame, calendario: Calendario,
-             familias: list[str]) -> tuple[pd.DataFrame, np.ndarray]:
-    """Variables y objetivo para cada fila con venta real conocida."""
-    filas = ventas_con_promo.sort_values(["fecha", "tienda_id", "familia_id"]).reset_index(drop=True)
-    X = construir_features(filas, filas, tiendas, calendario, familias)
-    return X, filas["ventas"].to_numpy(float)
+def preparar(ventas: pd.DataFrame, promociones: pd.DataFrame, tiendas: pd.DataFrame,
+             calendario: Calendario, familias: list[str]) -> tuple[pd.DataFrame, np.ndarray, int]:
+    """Variables y objetivo de cada ejemplo supervisado (venta y promoción conocidas).
+
+    Las variables se calculan con **todas** las ``ventas``, incluidas las que no
+    tienen promoción. Devuelve ``(X, y, filas_sin_promocion)``.
+    """
+    sup, sin_promo = filas_supervisadas(ventas, promociones)
+    X = construir_features(ventas, sup, tiendas, calendario, familias)
+    return X, sup["ventas"].to_numpy(float), sin_promo
 
 
 def ajustar_con_calibracion(X: pd.DataFrame, y: np.ndarray, corte: pd.Timestamp,
@@ -124,21 +135,30 @@ class Pronosticador:
     calendario: Calendario
     tiendas: pd.DataFrame
     familias: list[str]
+    maximos_promocion: dict[str, int]
     info: dict
 
     @classmethod
-    def entrenar(cls, ventas_con_promo: pd.DataFrame, tiendas: pd.DataFrame, feriados: pd.DataFrame,
-                 costos: pd.DataFrame, familias: list[str], fecha_corte: date | pd.Timestamp,
+    def entrenar(cls, ventas: pd.DataFrame, promociones: pd.DataFrame, tiendas: pd.DataFrame,
+                 feriados: pd.DataFrame, costos: pd.DataFrame, familias: list[str],
+                 fecha_corte: date | pd.Timestamp,
                  config: ConfigEntrenamiento | None = None) -> "Pronosticador":
+        """``ventas``: ventas reales (histórico + observaciones). ``promociones``: una por
+        clave (:func:`ml.datos.consolidar_promociones`). Solo se usan fechas < ``fecha_corte``."""
         config = config or ConfigEntrenamiento()
         corte = pd.Timestamp(fecha_corte)
         cal = Calendario(feriados)
-        datos = ventas_con_promo[pd.to_datetime(ventas_con_promo["fecha"]) < corte]
-        X, y = preparar(datos, tiendas, cal, familias)
+        v = ventas[pd.to_datetime(ventas["fecha"]) < corte]
+        p = promociones[pd.to_datetime(promociones["fecha"]) < corte]
+        X, y, sin_promo = preparar(v, p, tiendas, cal, familias)
         modelo, residuos, info = ajustar_con_calibracion(X, y, corte, config)
         calibrador = crear_calibrador(config.estrategia, residuos, taus(costos))
-        info["promocion_max_familia"] = datos.groupby("familia_id")["en_promocion"].max().to_dict()
-        return cls(config, modelo, calibrador, cal, tiendas.copy(), list(familias), info)
+        # Máximo de promociones por familia en los ejemplos de entrenamiento (< corte)
+        maximos = {f: int(m) for f, m in X.groupby("familia_id")["en_promocion"].max().items()}
+        info.update(filas_sin_promocion=int(sin_promo), filas_ventas=int(len(v)),
+                    maximos_promocion=maximos,
+                    discrepancias_promocion=int(len(discrepancias_promocion(p))))
+        return cls(config, modelo, calibrador, cal, tiendas.copy(), list(familias), maximos, info)
 
     def predecir(self, objetivos: pd.DataFrame, ventas: pd.DataFrame) -> pd.DataFrame:
         """``objetivos``: fecha, tienda_id, familia_id, en_promocion. ``ventas``: ventas

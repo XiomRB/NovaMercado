@@ -41,8 +41,9 @@ pip install -r requirements/dev.txt
 python -m pytest -q
 ```
 
-Las pruebas no requieren MLflow ni la base de datos. Las de `tests/ejemplos/`
-usan `raw/ejemplos` y se omiten si esa carpeta no existe.
+Las pruebas no requieren MLflow, la base de datos ni la carpeta `raw/`: usan
+fixtures sintéticos de `tests/fixtures/` y datos generados, así que se ejecutan
+completas desde un clon limpio.
 
 ## Experimento de modelos (etapa 2)
 
@@ -67,7 +68,8 @@ requirements/     comun.txt, api.txt, dev.txt (versiones fijas)
 tests/
   unit/           pruebas por módulo y de robustez
   ml/             sin fuga temporal, costo/cuantil, modelos y backtesting
-  ejemplos/       política sobre los ejemplos publicados
+  ejemplos/       un ejemplo sintético por caso del catálogo de errores
+  fixtures/       catálogo y ejemplos sintéticos (sin datos originales)
 AGENTS.md         contexto para agentes de programación
 DECISIONES.md     decisiones técnicas y política de calidad de datos
 ```

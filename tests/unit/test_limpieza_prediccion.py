@@ -248,3 +248,57 @@ def test_no_modifica_el_payload_original(catalogo, prediccion_valida):
     copia = copy.deepcopy(prediccion_valida)
     limpiar(prediccion_valida, catalogo)
     assert prediccion_valida == copia and original != copia
+
+
+# --------------------------------------------------- promociones atípicas
+MAXIMOS = {f: 10 for f in FAMILIAS} | {"abarrotes": 19, "panaderia": 7}
+
+
+@pytest.mark.parametrize("valor, atipica", [(7, False), (8, True), (25, True), ("9", True), (0, False)])
+def test_promocion_atipica_se_advierte_y_se_conserva(catalogo, prediccion_valida, valor, atipica):
+    i = next(i for i, f in enumerate(prediccion_valida["familias"]) if f["familia_id"] == "panaderia")
+    prediccion_valida["familias"][i]["en_promocion"] = valor
+    s, r = limpiar_solicitud_prediccion(prediccion_valida, catalogo, maximos_promocion=MAXIMOS)
+    assert promos(s)["panaderia"] == int(valor)          # nunca se convierte en 0 ni se recorta
+    advertencias = [o for o in r.observaciones
+                    if o.campo == f"familias[{i}].en_promocion" and o.accion == "advertir"]
+    assert bool(advertencias) == atipica
+    if atipica:
+        assert "máximo" in advertencias[0].detalle and "(7)" in advertencias[0].detalle
+        assert r.estado == "advertencia"
+
+
+def test_sin_maximos_no_se_advierte(catalogo, prediccion_valida):
+    prediccion_valida["familias"][0]["en_promocion"] = 500
+    s, r = limpiar_solicitud_prediccion(prediccion_valida, catalogo)
+    assert promos(s)["abarrotes"] == 500 and r.estado == "ok"
+
+
+def test_familia_sin_maximo_conocido_no_se_advierte(catalogo, prediccion_valida):
+    prediccion_valida["familias"][0]["en_promocion"] = 50
+    _, r = limpiar_solicitud_prediccion(prediccion_valida, catalogo, maximos_promocion={"bebidas": 3})
+    assert ("familias[1].en_promocion", "advertir") in acciones(r)   # bebidas=8 > 3
+    assert ("familias[0].en_promocion", "advertir") not in acciones(r)
+
+
+def test_valida_dentro_de_rango_sigue_ok(catalogo, prediccion_valida):
+    _, r = limpiar_solicitud_prediccion(prediccion_valida, catalogo, maximos_promocion=MAXIMOS)
+    assert r.estado == "ok" and r.observaciones == []
+
+
+# --------------------------------------------------- promociones supuestas
+def test_promociones_supuestas_se_registran(catalogo, prediccion_valida):
+    fams = {f["familia_id"]: f for f in prediccion_valida["familias"] if f["familia_id"] != "bebe"}
+    fams["abarrotes"]["en_promocion"] = "abc"      # -> 0 supuesto
+    fams["bebidas"]["en_promocion"] = -2           # -> 0 supuesto
+    fams["carnes"]["en_promocion"] = 2.5           # -> 3, deriva del dato: no es supuesto
+    del fams["cuidado_personal"]["en_promocion"]   # -> 0 supuesto
+    prediccion_valida["familias"] = list(fams.values())   # 'bebe' falta -> 0 supuesto
+    s, r = limpiar_solicitud_prediccion(prediccion_valida, catalogo)
+    assert promos(s)["carnes"] == 3
+    assert r.promociones_supuestas == {"abarrotes", "bebidas", "cuidado_personal", "bebe"}
+
+
+def test_sin_supuestos_en_solicitud_valida(catalogo, prediccion_valida):
+    _, r = limpiar_solicitud_prediccion(prediccion_valida, catalogo)
+    assert r.promociones_supuestas == set()

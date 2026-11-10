@@ -118,6 +118,9 @@ Aritmético (0.5 hacia arriba), no el redondeo bancario de Python, para que
 * **D2:** duplicados idénticos se eliminan (reparar); con valores distintos se
   rechaza la solicitud con 422, sin elegir automáticamente una aparición. La
   misma regla se aplica a las observaciones por consistencia.
+* **Promociones atípicas:** si `en_promocion` supera el máximo de su familia en
+  los datos de entrenamiento del modelo vigente → **advertir y conservar el
+  valor** (nunca se recorta ni se convierte en 0). Ver §9.
 * **D3:** se rechazan fechas anteriores a la apertura de la tienda; se aceptan
   fechas dentro y después del histórico. La advertencia por observaciones
   desactualizadas depende de la base de datos y se implementa en la etapa 4.
@@ -125,9 +128,22 @@ Aritmético (0.5 hacia arriba), no el redondeo bancario de Python, para que
 
 ## 4. Pruebas sin datos del repositorio
 
-Las pruebas unitarias usan un catálogo sintético (`tests/conftest.py`) para no
-depender de `raw/`, que no se publica. `tests/ejemplos/` ejecuta la política
-sobre los ejemplos publicados reales y se omite si `raw/ejemplos` no existe.
+**Ninguna prueba lee `raw/`**: toda la suite se ejecuta desde un clon limpio,
+sin pruebas omitidas.
+
+* `tests/fixtures/catalogo/`: catálogo sintético (3 tiendas inventadas, las 12
+  familias del contrato), cargado con el mismo `Catalogo.desde_csv` del servicio.
+* `tests/fixtures/ejemplos/`: un ejemplo por caso del catálogo de errores
+  (E01–E10, más una solicitud y una observación válidas). Reproducen la
+  estructura y el problema de cada caso publicado con **valores inventados**
+  (fecha 2026-04-14, ventas y promociones distintas); no son copias de los
+  archivos originales.
+* `tests/ml/sinteticos.py`: generador de histórico, tiendas, feriados y costos
+  para el pipeline de ML; `tests/ml/test_datos.py` escribe esa carpeta en un
+  directorio temporal para probar `cargar_raw`.
+
+*Alternativa descartada:* mantener pruebas sobre `raw/ejemplos` que se omiten
+sin los datos; dejaban sin cubrir esos casos en cualquier clon limpio.
 `tests/unit/test_robustez.py` aplica 800 mutaciones aleatorias deterministas y
 verifica que el resultado sea siempre una solicitud válida o un rechazo
 controlado, nunca otra excepción.
@@ -227,16 +243,87 @@ Entrenamiento de producción completo (modelo de calibración + modelo final +
 calibrador) con todo el histórico: **14 s**. Predicción de una tienda: 0.12 s.
 Holgado para el límite de 10 minutos por reentrenamiento.
 
+## 9. Promociones atípicas
+
+* Umbral: máximo de `en_promocion` por familia **en los ejemplos de
+  entrenamiento del modelo** (fechas < corte, solo promociones conocidas).
+  Se guarda en `Pronosticador.maximos_promocion`; con el histórico actual va
+  de 7 (panadería) a 19 (abarrotes).
+* Justificación: la distribución es discreta y acotada; el p99.9 está a 1–2
+  unidades del máximo, así que superarlo es realmente inusual. Además los
+  árboles no extrapolan: por encima del máximo el modelo responde como si fuera
+  el máximo, y ese es el supuesto que la advertencia informa.
+* Acción: `advertir`, conservando el valor. `limpiar_solicitud_prediccion`
+  recibe los máximos del modelo vigente (parámetro `maximos_promocion`); la API
+  los pasará en la etapa 4. Sin máximos (o familia sin máximo) no se advierte.
+* Se prueba que el umbral no cambia si se alteran datos posteriores al corte.
+
+## 10. Promociones al reentrenar
+
+Las observaciones de ventas reales no traen `en_promocion`. Al reentrenar:
+
+* **Ventas** (histórico + observaciones) → alimentan todas las variables
+  históricas (rezagos, medias), tengan o no promoción conocida.
+* **Ejemplos de entrenamiento** → solo filas con venta **y promoción real**
+  conocidas (`ml.datos.filas_supervisadas`). Una venta sin promoción real (sin
+  solicitud, o solo con promociones supuestas) no es ejemplo supervisado, pero
+  su venta sí cuenta en los rezagos y medias de los días siguientes.
+
+### Promoción real vs supuesta
+
+* **Real:** la recibida de forma utilizable en la solicitud (aunque se haya
+  reparado, p. ej. `"3"` → 3, o redondeado, 2.5 → 3: deriva del dato enviado).
+* **Supuesta:** la que completó la capa de calidad porque faltaba la familia
+  (D1), faltaba el campo o el valor era nulo, no numérico o negativo (se usó 0).
+  `limpiar_solicitud_prediccion` las informa en
+  `RegistroCalidad.promociones_supuestas`. Sirven para responder la predicción
+  de ese día (con advertencia), pero **nunca** como dato de entrenamiento ni
+  para detectar discrepancias.
+
+### Origen de la promoción (`ml.datos.consolidar_promociones`)
+
+1. **Histórico:** `en_promocion` de `historico_ventas.csv` es, según el
+   enunciado, el número de productos en promoción registrado junto con la venta
+   real de ese día (sin nulos ni marcas de imputación): se trata como la
+   promoción **observada** y tiene prioridad.
+2. **Solicitud:** si no hay valor histórico, la última solicitud con promoción
+   real para esa tienda, fecha y familia.
+   * **"Última"** = mayor `registrado_en`; empate → mayor `solicitud_id`. Es un
+     orden total y determinista: no depende del orden de inserción ni del orden
+     de las filas recibidas. Si faltan esas columnas o tienen nulos, se lanza un
+     error en vez de suponer un orden.
+3. **Conflicto** (histórico y solicitud existen y difieren): se usa el
+   histórico, pero el valor de la solicitud **no se descarta en silencio**:
+   queda en `en_promocion_solicitud`, la fila se marca con `discrepancia=True`
+   (`ml.datos.discrepancias_promocion`), se registra una advertencia en el log
+   y `Pronosticador.info["discrepancias_promocion"]` cuenta las del
+   entrenamiento. Una promoción supuesta nunca genera discrepancia.
+
+Pruebas (`tests/ml/test_reentrenamiento.py`): orden por `registrado_en` con
+cualquier orden de entrada, desempate por `solicitud_id`, varias tiendas del
+mismo día, columnas obligatorias, supuesta ignorada aunque sea la última,
+coincidencia, conflicto (con log y conteo en el entrenamiento), ausencia de
+histórico, supuesta excluida como ejemplo pero presente en `lag_1`, y
+equivalencia con el histórico completo. Verificado por mutación: ignorar
+`registrado_en` o no marcar discrepancias hace fallar las pruebas.
+
+### Contrato de datos para la persistencia (etapa 3)
+
+`consolidar_promociones` recibe una fila por familia de cada solicitud con
+(`COLUMNAS_SOLICITUDES`):
+
+| Columna | Tipo | Origen |
+|---|---|---|
+| `solicitud_id` | entero creciente, único por solicitud | clave primaria asignada por PostgreSQL |
+| `registrado_en` | timestamp con zona | momento en que el servicio registró la solicitud |
+| `fecha`, `tienda_id`, `familia_id` | fecha, entero, texto | solicitud ya limpia |
+| `en_promocion` | entero ≥ 0 | valor usado para predecir |
+| `promocion_supuesta` | booleano, no nulo | `familia_id in RegistroCalidad.promociones_supuestas` |
+
+`registrado_en` solo ordena las solicitudes recibidas (auditoría); **nunca**
+se usa para validar la `fecha` solicitada, que es simulada.
+
 ## Pendientes de decidir (etapas siguientes)
 
 * Umbral de antigüedad de observaciones para advertir (D3), etapa 4.
-* **Promociones atípicas (propuesta):** advertir cuando `en_promocion` supere el
-  máximo histórico de su familia (7 en panadería a 19 en abarrotes,
-  `Pronosticador.info["promocion_max_familia"]`), conservando el valor. Motivo:
-  el p99.9 está a 1–2 unidades del máximo, de modo que superarlo es realmente
-  inusual, y los árboles no extrapolan: más allá del máximo el modelo responde
-  como si fuera el máximo, que es justamente el supuesto que debe informarse.
-* Promoción de los días registrados por observaciones al reentrenar
-  (las observaciones no la incluyen): tomarla de la solicitud de predicción de
-  ese día; sin solicitud, excluir esa fila del entrenamiento pero usar su venta
-  en los rezagos. Etapas 3 y 7.
+* Persistir las columnas del contrato anterior en la etapa 3.

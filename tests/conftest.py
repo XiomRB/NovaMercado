@@ -1,19 +1,21 @@
 """Fixtures compartidas.
 
-Las pruebas unitarias usan un catálogo *sintético* (no leen ``raw/``, que no
-forma parte del repositorio). Los identificadores de familia son los del
-contrato; las tiendas se eligen para cubrir los casos de borde (tienda 10 con
-apertura posterior).
+Ninguna prueba lee ``raw/`` (los datos publicados no forman parte del
+repositorio): todo sale de ``tests/fixtures/`` o de datos generados. El catálogo
+de prueba es sintético: los identificadores de familia son los del contrato y
+las tiendas cubren los casos de borde (la tienda 10 abre el 2025-03-15).
 """
 
 from __future__ import annotations
 
 import copy
-from datetime import date
+from pathlib import Path
 
 import pytest
 
-from app.calidad.catalogo import Catalogo, Tienda
+from app.calidad.catalogo import Catalogo
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 FAMILIAS = {
     "abarrotes": "Abarrotes",
@@ -36,12 +38,10 @@ VENTAS_VALIDAS = {f: 100 + i for i, f in enumerate(FAMILIAS)}
 
 @pytest.fixture(scope="session")
 def catalogo() -> Catalogo:
-    tiendas = {
-        1: Tienda(1, "Guatemala", "hipermercado", date(2019, 1, 1)),
-        5: Tienda(5, "Quetzaltenango", "hipermercado", date(2019, 1, 1)),
-        10: Tienda(10, "Guatemala", "express", date(2025, 3, 15)),
-    }
-    return Catalogo(tiendas, FAMILIAS)
+    """Catálogo sintético cargado con el mismo lector que usa el servicio."""
+    c = Catalogo.desde_csv(FIXTURES / "catalogo")
+    assert c.familias == FAMILIAS
+    return c
 
 
 @pytest.fixture

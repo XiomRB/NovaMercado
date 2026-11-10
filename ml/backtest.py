@@ -45,7 +45,7 @@ def ejecutar_backtest(datos: DatosBase, cortes: list, horizonte: int = 28,
     t = taus(datos.costos)
     # Las variables de cada fila solo usan ventas anteriores a su fecha, así que se
     # pueden calcular una vez para todo el histórico (equivalencia probada en tests).
-    X, y = preparar(datos.historico, datos.tiendas, cal, familias)
+    X, y, _ = preparar(datos.historico, datos.historico, datos.tiendas, cal, familias)
 
     filas, infos = [], []
     for corte in map(pd.Timestamp, cortes):
