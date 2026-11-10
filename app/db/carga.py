@@ -94,7 +94,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--raw", default="raw", help="carpeta con los archivos publicados")
     a = ap.parse_args()
-    motor = crear_motor()
+    motor = crear_motor(timeout_consulta=300)   # proceso por lotes: límite amplio
     for archivo, r in cargar_datos_publicados(motor, a.raw).items():
         print(f"{archivo}: {r}")
     motor.dispose()

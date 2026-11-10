@@ -50,3 +50,29 @@ def test_json_seguro():
         "a": "nan", "b": [1, "inf"], "3": None}
     assert json_seguro([{"x": (1, 2)}]) == [{"x": [1, 2]}]
     assert json_seguro("texto") == "texto"
+
+
+def test_valores_por_defecto_y_variables_de_entorno(monkeypatch):
+    from app.db import conexion
+    capturado = {}
+    real = conexion.create_engine
+
+    def espia(url, **kw):
+        capturado.update(kw["connect_args"])
+        return real(url, **kw)
+
+    monkeypatch.setattr(conexion, "create_engine", espia)
+    for v in ("DB_TIMEOUT_CONEXION", "DB_TIMEOUT_CONSULTA", "DB_MARGEN_CLIENTE"):
+        monkeypatch.delenv(v, raising=False)
+    conexion.crear_motor(SIN_SERVIDOR).dispose()
+    assert capturado["connect_timeout"] == 5
+    assert "statement_timeout=5000" in capturado["options"]
+    assert "idle_in_transaction_session_timeout=30000" in capturado["options"]
+    assert capturado["connection_factory"].limite_cliente == 7          # 5 s + margen de 2 s
+    monkeypatch.setenv("DB_TIMEOUT_CONSULTA", "2.5")
+    monkeypatch.setenv("DB_MARGEN_CLIENTE", "1")
+    conexion.crear_motor(SIN_SERVIDOR).dispose()
+    assert "statement_timeout=2500" in capturado["options"] and capturado["connection_factory"].limite_cliente == 3.5
+    conexion.crear_motor(SIN_SERVIDOR, timeout_consulta=300).dispose()   # procesos por lotes
+    assert "statement_timeout=300000" in capturado["options"]
+    assert "idle_in_transaction_session_timeout=1800000" in capturado["options"]

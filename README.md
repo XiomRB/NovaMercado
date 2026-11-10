@@ -92,7 +92,10 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
   marcha, el modelo nuevo se carga solo (consulta cada `MODELO_INTERVALO_REFRESCO` s).
 * Rechazos: 422 con `detail`; quedan registrados (si la base no responde, se
   responde 422 igual y el fallo se registra en el log).
-* Base de datos no disponible: 503 (nunca se entrega una predicción sin registrarla).
+* Base de datos no disponible o que no responde: 503 (nunca se entrega una
+  predicción sin registrarla). Cada consulta tiene un límite (`DB_TIMEOUT_CONSULTA`,
+  5 s, en el servidor; +`DB_MARGEN_CLIENTE` en el cliente): ninguna solicitud
+  queda esperando indefinidamente.
 * Documentación interactiva: `http://localhost:8000/docs`.
 
 ## Pruebas

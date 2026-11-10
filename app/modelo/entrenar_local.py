@@ -40,7 +40,7 @@ def main() -> None:
     ap.add_argument("--salida", default=None, help="ruta del artefacto (por defecto MODELO_RUTA)")
     a = ap.parse_args()
     destino = Path(a.salida) if a.salida else ruta_modelo()
-    motor = crear_motor()
+    motor = crear_motor(timeout_consulta=300)   # proceso por lotes: límite amplio
     try:
         r = entrenar_desde_bd(motor)
     finally:

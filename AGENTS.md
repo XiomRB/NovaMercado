@@ -66,7 +66,7 @@ esas constraints.
 | 4 API FastAPI | en revisión (`feat/etapa-4-api`) |
 | 5 MLflow (registro, alias, recarga, health) | pendiente |
 | 6 Docker Compose + bootstrap | pendiente |
-| 7 Airflow DAG + /admin | pendiente |
+| 7 Airflow DAG + orquestador real de /admin (los endpoints ya existen) | pendiente |
 | 8 Simulador de operación | pendiente |
 | 9 Documentación final y tag `entrega-lab2` | pendiente |
 
@@ -125,6 +125,9 @@ tests/fixtures/ catálogo y ejemplos sintéticos: las pruebas nunca leen raw/
   agregan como verificaciones en `app/dependencias.py:construir_monitor`.
 * Para predecir F solo se leen ventas con fecha < F (`leer_ventas_previas`) y se
   vuelve a filtrar en el servicio.
+* Toda conexión de la API usa `crear_motor` (límites de conexión, `statement_timeout`
+  y vigilante del cliente). Los procesos por lotes pasan `timeout_consulta` mayor;
+  no crear motores con `create_engine` directo fuera de pruebas y Alembic.
 
 ## Reglas de ML
 
