@@ -62,8 +62,8 @@ esas constraints.
 | 0 Repositorio y dependencias | hecho |
 | 1 Calidad de datos + esquemas Pydantic | hecho (pruebas en `tests/unit`, `tests/ejemplos`) |
 | 2 ML offline (baseline, modelo, backtest) | hecho (PR #1 y #2) |
-| 3 Persistencia PostgreSQL + CI | en revisión (`feat/etapa-3-persistencia`) |
-| 4 API FastAPI | pendiente |
+| 3 Persistencia PostgreSQL + CI | hecho (PR #3) |
+| 4 API FastAPI | en revisión (`feat/etapa-4-api`) |
 | 5 MLflow (registro, alias, recarga, health) | pendiente |
 | 6 Docker Compose + bootstrap | pendiente |
 | 7 Airflow DAG + /admin | pendiente |
@@ -78,6 +78,9 @@ app/calidad/   resultado.py (acciones, estado, rechazo), texto.py, numeros.py,
                prediccion.py, observaciones.py
 app/schemas/   contrato.py (Pydantic del Anexo)
 app/db/        esquema.py, conexion.py, carga.py, repositorio.py
+app/modelo/    proveedores.py, gestor.py, entrenamiento.py, entrenar_local.py
+app/servicios/ persistencia.py, prediccion.py, observaciones.py, rechazos.py
+app/main.py    FastAPI; app/salud.py monitor; app/orquestador.py; app/dependencias.py
 migraciones/   Alembic
 ml/           datos.py (carga raw/), calendario.py (feriados), features.py (variables
               sin fuga), modelos.py (baseline + HGB), costos.py (costo, τ, cantidad
@@ -86,6 +89,7 @@ ml/           datos.py (carga raw/), calendario.py (feriados), features.py (vari
 scripts/      experimento_etapa2.py (backtesting -> reportes/etapa2/)
 tests/unit/    pruebas por módulo + robustez (fuzzing determinista)
 tests/ml/      sin fuga, costo/cuantil, baseline, backtest (datos sintéticos)
+tests/api/     contrato HTTP con persistencia en memoria (tests/api/memoria.py) y modelo sintético
 tests/integracion/ PostgreSQL real (TEST_DATABASE_URL), base nueva por prueba
 tests/ejemplos/ un ejemplo sintético por caso E01–E10 (tests/fixtures/ejemplos)
 tests/fixtures/ catálogo y ejemplos sintéticos: las pruebas nunca leen raw/
@@ -107,6 +111,20 @@ tests/fixtures/ catálogo y ejemplos sintéticos: las pruebas nunca leen raw/
   por (tienda, fecha). `registros_guardados` = nuevos + modificados.
 * Las pruebas de integración crean bases desechables a partir de
   `TEST_DATABASE_URL`; jamás apuntarla a la base del producto.
+
+## Reglas de la API
+
+* Endpoints delgados en `app/main.py`; la lógica va en `app/servicios/` y usa la
+  interfaz `Persistencia` (nunca SQL en los servicios).
+* El cuerpo se lee crudo: no declarar modelos Pydantic en la firma de los
+  endpoints (FastAPI rechazaría antes de que la capa de calidad repare).
+* Toda respuesta se valida con `app/schemas/contrato.py` antes de devolverse.
+* La API nunca entrena al iniciar; el modelo llega por un `ProveedorModelo`
+  (archivo local en la etapa 4, MLflow en la 5) a través de `GestorModelo`.
+* `/health` solo lee el diagnóstico del `MonitorSalud`; nuevas dependencias se
+  agregan como verificaciones en `app/dependencias.py:construir_monitor`.
+* Para predecir F solo se leen ventas con fecha < F (`leer_ventas_previas`) y se
+  vuelve a filtrar en el servicio.
 
 ## Reglas de ML
 

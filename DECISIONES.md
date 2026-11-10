@@ -470,7 +470,92 @@ modificados sin una segunda lectura).
   commit propio y con la suite completa sin cambios.
 * **Fuera de alcance:** no hay despliegue ni publicación de imágenes.
 
+## 13. API (etapa 4)
+
+### Decisiones aprobadas (D-A a D-G)
+
+* **D-A · Modelo local:** `python -m app.modelo.entrenar_local` entrena con la
+  base (configuración aprobada `hgb_relativo + mult_familia`; ventas
+  consolidadas y promociones reales) y escribe `modelos/modelo_local.joblib` de
+  forma atómica. Versión `local-AAAAMMDD-<sha256[:12]>`: depende del corte de
+  los datos y del contenido, no del reloj. Alias `local`. **La API no entrena al
+  iniciar**; sin artefacto (o si no carga) responde 503 y `/health` lo refleja.
+  El artefacto no se versiona (`modelos/` en `.gitignore`). Se rechaza si fue
+  creado con otras versiones de scikit-learn, numpy o pandas.
+* **D-B · Componentes requeridos:** `COMPONENTES_REQUERIDOS` (por defecto
+  `base_datos,modelo` en esta etapa). Un componente no requerido y sin
+  verificación aparece como `no_configurado`; uno requerido sin verificación
+  degrada el estado: `ok` nunca oculta una dependencia ausente.
+* **D-C · Base caída al predecir:** 503; no se entrega una predicción sin registrar.
+* **D-D · Antigüedad:** se advierte si la última venta real de una familia es
+  anterior a F−1 (lo normal es que llegue la de F−1 antes de la solicitud de F).
+  Un solo mensaje en `fecha` lista las familias y días; sin ventas en 28 días
+  (o sin ventas previas) se informa que se usó el nivel de respaldo. Se calcula
+  **solo con ventas de fecha < F** (`advertir_antiguedad` rechaza otra cosa) y
+  nunca con el reloj del sistema.
+* **D-E · Rechazo con la base caída:** se responde 422 igual; el log registra el
+  fallo con el tipo de error, **sin el contenido de la solicitud**.
+* **D-F · `/admin`:** `OrquestadorNoConfigurado` → `POST` 503 y `GET` 404 hasta la etapa 7.
+* **D-G · `venta_esperada`:** redondeada a 2 decimales; la cantidad se calcula sin redondear.
+
+### Arquitectura
+
+* Endpoints delgados (`app/main.py`) que leen el cuerpo crudo: la validación de
+  FastAPI no interviene, así que la capa de calidad puede reparar e informar.
+  Cuerpo no JSON → 422 y se registra `{"cuerpo_no_json": <primeros 2000 caracteres>}`.
+* Servicios sin HTTP (`app/servicios/`) sobre una interfaz `Persistencia`
+  (PostgreSQL en producción; en memoria en las pruebas de contrato).
+* Flujo de predicción: modelo vigente → limpieza con los **máximos de promoción
+  del modelo cargado** → en una transacción: ventas previas (solo < F; ventana de
+  60 días más la última venta de cada familia, para que `ultimo_valor` y
+  `dias_desde_ultimo` coincidan con los del entrenamiento) → antigüedad →
+  predicción → validación de la respuesta con Pydantic → registro.
+* `GestorModelo`: referencia inmutable al modelo (cambio atómico), recarga en
+  segundo plano cuando cambia la huella del proveedor y **conserva el modelo
+  vigente** si la carga nueva falla. La etapa 5 agrega `ProveedorMLflow` sin
+  cambiar la API.
+* `MonitorSalud`: verificaciones **en paralelo** con límite global por ciclo
+  (`SALUD_LIMITE`, 3 s) cada `SALUD_INTERVALO` (10 s); una verificación colgada
+  cuenta como falla y no se relanza mientras siga colgada; `/health` solo lee el
+  último resultado. Peor caso de transición: 13 s.
+* Errores: `SolicitudRechazada` → 422; `ModeloNoDisponible` y
+  `BaseDatosNoDisponible` → 503; cualquier otro → 500 genérico (registrado en el
+  log, sin detalles internos en la respuesta).
+
+### Verificación
+
+* `tests/api/` (62, sin base): contrato de los seis endpoints, E01–E10 por HTTP,
+  cuerpos inválidos, promociones supuestas y atípicas, antigüedad, sin fuga
+  temporal (predecir F con datos posteriores en la base = sin ellos),
+  solicitudes repetidas, 300 cuerpos aleatorios sin ningún 500, sin modelo, base
+  caída y recuperación, rechazo con la base caída sin exponer datos en el log;
+  monitor (paralelo, límite, colgadas, transiciones) y gestor (recarga, conserva
+  el vigente, lecturas concurrentes).
+* `tests/integracion/test_api_postgres.py` (9, PostgreSQL): registro completo,
+  idempotencia y relación con la venta real, rechazos, sin fuga con la base real
+  (igual al modelo con el histórico truncado en F), ventas previas estrictamente
+  anteriores, base inaccesible, `entrenar_desde_bd` sin promociones supuestas y
+  carga de un artefacto nuevo sin reiniciar.
+* **Error encontrado:** SQLAlchemy entrega los nombres de columna como
+  `quoted_name` y scikit-learn los rechazaba al predecir o entrenar con datos de
+  la base; se convierten a `str` en el repositorio (prueba de regresión).
+* Mutaciones: incluir ventas de F en la consulta, ejecutar las verificaciones en
+  serie y descartar el modelo vigente al fallar una recarga hacen fallar pruebas.
+* Con los datos reales (solo local): `entrenar_local` en 14 s
+  (`local-20260301-…`, 80 028 filas); servidor uvicorn real con los ejemplos
+  publicados (≈0.1 s por predicción); la predicción de la tienda 5 para
+  2026-03-01 coincide con la de la etapa 2 (1837.13 / 2252); con la base
+  congelada (`docker pause`) `/health` pasó a degradado en 3.7 s y volvió a ok
+  en 4.9 s, y la predicción respondió 503 en 5 s.
+
+### Limitación conocida
+
+Si el servidor de la base se **congela** en mitad de una consulta ya enviada (no
+si se detiene), psycopg2 no tiene un tiempo límite de lectura del lado del
+cliente y esa solicitud puede esperar. Las conexiones nuevas fallan en
+`DB_TIMEOUT_CONEXION` y `/health` no se ve afectado. Un corte normal (servidor
+detenido) se detecta de inmediato.
+
 ## Pendientes de decidir (etapas siguientes)
 
-
-* Umbral de antigüedad de observaciones para advertir (D3), etapa 4.
+* Ninguno abierto en la etapa 4.
