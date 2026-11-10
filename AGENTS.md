@@ -52,7 +52,7 @@ esas constraints.
 |---|---|
 | 0 Repositorio y dependencias | hecho |
 | 1 Calidad de datos + esquemas Pydantic | hecho (pruebas en `tests/unit`, `tests/ejemplos`) |
-| 2 ML offline (baseline, modelo, backtest) | en revisión (PR `feat/etapa-2-modelos`) |
+| 2 ML offline (baseline, modelo, backtest) | hecho (PR #1); ajustes en `fix/etapa-2-ajustes` |
 | 3 Persistencia PostgreSQL | pendiente |
 | 4 API FastAPI | pendiente |
 | 5 MLflow (registro, alias, recarga, health) | pendiente |
@@ -75,7 +75,8 @@ ml/           datos.py (carga raw/), calendario.py (feriados), features.py (vari
 scripts/      experimento_etapa2.py (backtesting -> reportes/etapa2/)
 tests/unit/    pruebas por módulo + robustez (fuzzing determinista)
 tests/ml/      sin fuga, costo/cuantil, baseline, backtest (datos sintéticos)
-tests/ejemplos/ ejemplos publicados de raw/ejemplos (se omite si no existen)
+tests/ejemplos/ un ejemplo sintético por caso E01–E10 (tests/fixtures/ejemplos)
+tests/fixtures/ catálogo y ejemplos sintéticos: las pruebas nunca leen raw/
 ```
 
 ## Reglas de ML
@@ -87,5 +88,12 @@ tests/ejemplos/ ejemplos publicados de raw/ejemplos (se omite si no existen)
   prueba verifica que den resultados idénticos. No duplicar lógica.
 * La cantidad sugerida la decide `CalibradorCuantil.sugerir` (óptimo entero del
   costo empírico con τ de la familia). No reemplazarla por un redondeo.
+* Reentrenar = `Pronosticador.entrenar(ventas, promociones, ...)`: las ventas
+  alimentan los rezagos; solo las filas con promoción conocida son ejemplos
+  (`ml/datos.py: consolidar_promociones, filas_supervisadas`).
+* `Pronosticador.maximos_promocion` (máximo por familia en entrenamiento) se pasa
+  a `limpiar_solicitud_prediccion(..., maximos_promocion=...)` para advertir
+  promociones atípicas sin modificarlas.
+* Ninguna prueba debe leer `raw/`; usar `tests/fixtures/` o `tests/ml/sinteticos.py`.
 * Con la CPU ocupada el backtesting completo tarda ~10–15 min; las pruebas de
   `tests/ml` usan datos sintéticos y `max_iter` reducido.

@@ -118,6 +118,9 @@ Aritmético (0.5 hacia arriba), no el redondeo bancario de Python, para que
 * **D2:** duplicados idénticos se eliminan (reparar); con valores distintos se
   rechaza la solicitud con 422, sin elegir automáticamente una aparición. La
   misma regla se aplica a las observaciones por consistencia.
+* **Promociones atípicas:** si `en_promocion` supera el máximo de su familia en
+  los datos de entrenamiento del modelo vigente → **advertir y conservar el
+  valor** (nunca se recorta ni se convierte en 0). Ver §9.
 * **D3:** se rechazan fechas anteriores a la apertura de la tienda; se aceptan
   fechas dentro y después del histórico. La advertencia por observaciones
   desactualizadas depende de la base de datos y se implementa en la etapa 4.
@@ -125,9 +128,22 @@ Aritmético (0.5 hacia arriba), no el redondeo bancario de Python, para que
 
 ## 4. Pruebas sin datos del repositorio
 
-Las pruebas unitarias usan un catálogo sintético (`tests/conftest.py`) para no
-depender de `raw/`, que no se publica. `tests/ejemplos/` ejecuta la política
-sobre los ejemplos publicados reales y se omite si `raw/ejemplos` no existe.
+**Ninguna prueba lee `raw/`**: toda la suite se ejecuta desde un clon limpio,
+sin pruebas omitidas.
+
+* `tests/fixtures/catalogo/`: catálogo sintético (3 tiendas inventadas, las 12
+  familias del contrato), cargado con el mismo `Catalogo.desde_csv` del servicio.
+* `tests/fixtures/ejemplos/`: un ejemplo por caso del catálogo de errores
+  (E01–E10, más una solicitud y una observación válidas). Reproducen la
+  estructura y el problema de cada caso publicado con **valores inventados**
+  (fecha 2026-04-14, ventas y promociones distintas); no son copias de los
+  archivos originales.
+* `tests/ml/sinteticos.py`: generador de histórico, tiendas, feriados y costos
+  para el pipeline de ML; `tests/ml/test_datos.py` escribe esa carpeta en un
+  directorio temporal para probar `cargar_raw`.
+
+*Alternativa descartada:* mantener pruebas sobre `raw/ejemplos` que se omiten
+sin los datos; dejaban sin cubrir esos casos en cualquier clon limpio.
 `tests/unit/test_robustez.py` aplica 800 mutaciones aleatorias deterministas y
 verifica que el resultado sea siempre una solicitud válida o un rechazo
 controlado, nunca otra excepción.
@@ -227,16 +243,43 @@ Entrenamiento de producción completo (modelo de calibración + modelo final +
 calibrador) con todo el histórico: **14 s**. Predicción de una tienda: 0.12 s.
 Holgado para el límite de 10 minutos por reentrenamiento.
 
+## 9. Promociones atípicas
+
+* Umbral: máximo de `en_promocion` por familia **en los ejemplos de
+  entrenamiento del modelo** (fechas < corte, solo promociones conocidas).
+  Se guarda en `Pronosticador.maximos_promocion`; con el histórico actual va
+  de 7 (panadería) a 19 (abarrotes).
+* Justificación: la distribución es discreta y acotada; el p99.9 está a 1–2
+  unidades del máximo, así que superarlo es realmente inusual. Además los
+  árboles no extrapolan: por encima del máximo el modelo responde como si fuera
+  el máximo, y ese es el supuesto que la advertencia informa.
+* Acción: `advertir`, conservando el valor. `limpiar_solicitud_prediccion`
+  recibe los máximos del modelo vigente (parámetro `maximos_promocion`); la API
+  los pasará en la etapa 4. Sin máximos (o familia sin máximo) no se advierte.
+* Se prueba que el umbral no cambia si se alteran datos posteriores al corte.
+
+## 10. Promociones al reentrenar
+
+Las observaciones de ventas reales no traen `en_promocion`. Al reentrenar:
+
+* **Ventas** (histórico + observaciones) → alimentan todas las variables
+  históricas (rezagos, medias), tengan o no promoción conocida.
+* **Ejemplos de entrenamiento** → solo filas con venta y promoción conocidas
+  (`ml.datos.filas_supervisadas`). Una observación sin promoción se excluye
+  como ejemplo, pero su venta sí cuenta en los rezagos de los días siguientes.
+* **Origen de la promoción** (`ml.datos.consolidar_promociones`):
+  1. `historico_ventas.csv` tiene prioridad (dato oficial);
+  2. si no, la solicitud de predicción de esa tienda y fecha; si hubo varias,
+     la **última** registrada;
+  3. las promociones **supuestas** por la capa de calidad (faltantes o no
+     válidas, `RegistroCalidad.promociones_supuestas`) se descartan: no son
+     dato real.
+* Se prueba que con promociones de solicitudes iguales a las reales el modelo
+  es idéntico al entrenado con el histórico completo, y que sin ellas esas
+  filas no se entrenan pero sí aparecen en `lag_1`.
+
 ## Pendientes de decidir (etapas siguientes)
 
 * Umbral de antigüedad de observaciones para advertir (D3), etapa 4.
-* **Promociones atípicas (propuesta):** advertir cuando `en_promocion` supere el
-  máximo histórico de su familia (7 en panadería a 19 en abarrotes,
-  `Pronosticador.info["promocion_max_familia"]`), conservando el valor. Motivo:
-  el p99.9 está a 1–2 unidades del máximo, de modo que superarlo es realmente
-  inusual, y los árboles no extrapolan: más allá del máximo el modelo responde
-  como si fuera el máximo, que es justamente el supuesto que debe informarse.
-* Promoción de los días registrados por observaciones al reentrenar
-  (las observaciones no la incluyen): tomarla de la solicitud de predicción de
-  ese día; sin solicitud, excluir esa fila del entrenamiento pero usar su venta
-  en los rezagos. Etapas 3 y 7.
+* Persistir `promocion_supuesta` y `registrado_en` de cada solicitud (etapa 3),
+  necesarios para `consolidar_promociones`.
