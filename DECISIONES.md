@@ -10,7 +10,9 @@ del Anexo tiene prioridad sobre cualquier decisión de implementación.
 | Python | 3.11 |
 | Apache Airflow | 2.10.5 (pendiente, etapa 7) |
 | MLflow | 2.22.1 |
-| PostgreSQL | 16 (pendiente, etapa 6) |
+| PostgreSQL | imagen `postgres:16.14-alpine` |
+| Alembic | 1.14.1 (igual que las constraints de Airflow 2.10.5) |
+| ruff (solo desarrollo y CI) | 0.17.2 |
 | numpy / pandas / scipy / scikit-learn | 1.26.4 / 2.1.4 / 1.15.2 / 1.6.1 |
 | pydantic / SQLAlchemy / psycopg2-binary | 2.10.6 / 1.4.54 / 2.9.10 |
 | FastAPI / uvicorn | 0.115.12 / 0.34.0 |
@@ -323,7 +325,138 @@ equivalencia con el histórico completo. Verificado por mutación: ignorar
 `registrado_en` solo ordena las solicitudes recibidas (auditoría); **nunca**
 se usa para validar la `fecha` solicitada, que es simulada.
 
+## 11. Persistencia en PostgreSQL (etapa 3)
+
+### Decisiones del usuario
+
+* Las solicitudes **rechazadas** (422) se guardan en la misma tabla que las
+  respondidas (`resultado = 'rechazada'`), con el payload y el motivo.
+* Si una observación coincide con una clave de `historico_ventas.csv`, se
+  guardan ambas (tablas separadas, el histórico nunca se modifica); al
+  entrenar **manda el histórico** y la diferencia se marca como discrepancia.
+* Al modificar una observación se conserva el valor anterior en
+  `observaciones_historial`.
+
+### Bases de datos
+
+* `db` (PostgreSQL 16.14): base **del producto**, volumen `db_producto`.
+* `airflow-db` (PostgreSQL 16.14): base **de Airflow** (etapa 7), otro servicio,
+  otro volumen (`db_airflow`) y otras credenciales. El producto nunca se conecta a ella.
+
+### Tablas
+
+Datos publicados (se cargan una vez desde `raw/`; nunca se modifican):
+
+| Tabla | Clave primaria | Claves foráneas y restricciones |
+|---|---|---|
+| `cargas_datos` | `carga_id` (identity) | `archivo` único, `sha256` del archivo cargado |
+| `tiendas` | `tienda_id` | `tienda_id > 0`; nombre, ciudad, tipo y apertura no nulos |
+| `familias` | `familia_id` | nombre no nulo |
+| `costos` | `familia_id` → `familias` | `costo_faltante > 0`, `costo_sobrante > 0` |
+| `feriados` | `feriado_id` (identity) | único (`fecha`, `nombre`, `ambito`); `tipo` ∈ {feriado, comercial, pago, medio_dia} |
+| `ventas_historicas` | (`fecha`, `tienda_id`, `familia_id`) | FK tiendas, familias, cargas_datos; `ventas ≥ 0`, `en_promocion ≥ 0` |
+
+Operación:
+
+| Tabla | Clave primaria | Relaciones y restricciones |
+|---|---|---|
+| `solicitudes_prediccion` | `solicitud_id` (identity, creciente) | `registrado_en` (timestamptz, `now()`), `resultado` ∈ {respondida, rechazada}, `payload` (jsonb, lo recibido tal cual); FK `tienda_id`. CHECK: respondida ⇒ tienda, fecha, modelo, versión y estado de calidad no nulos y sin motivo de rechazo; rechazada ⇒ motivo no nulo, sin versión ni estado. Índice (`tienda_id`, `fecha`, `registrado_en`, `solicitud_id`) |
+| `solicitud_familias` | (`solicitud_id`, `familia_id`) | FK solicitud y familia; `en_promocion ≥ 0`; `promocion_supuesta` booleano no nulo (real vs supuesta) |
+| `predicciones` | (`solicitud_id`, `familia_id`) | FK compuesta → `solicitud_familias` (solo se predice lo solicitado); `venta_esperada ≥ 0`, `cantidad_sugerida ≥ 0` entero. La versión del modelo está en la solicitud |
+| `envios_observacion` | `envio_id` (identity) | cada `POST /v1/observaciones`, incluso los repetidos y rechazados; `registros_nuevos`, `registros_modificados`; CHECK análogo al de solicitudes |
+| `observaciones` | (`fecha`, `tienda_id`, `familia_id`) | **clave de idempotencia**; `ventas ≥ 0`; FK `envio_id_creacion` y `envio_id_modificacion` → envíos |
+| `observaciones_historial` | `historial_id` (identity) | FK compuesta → `observaciones`, FK `envio_id`; `ventas_anterior ≠ ventas_nueva` |
+| `calidad_observaciones` | `calidad_id` (identity) | correcciones y advertencias (`accion` ∈ {reparar, advertir}) de una solicitud **o** de un envío (CHECK: exactamente uno); único (`solicitud_id`, `orden`) y (`envio_id`, `orden`) |
+
+Relación predicción ↔ venta real: por la clave natural (`fecha`, `tienda_id`,
+`familia_id`), porque la observación puede llegar sin predicción previa (y una
+fecha puede tener varias solicitudes). La vista `v_predicciones_reales` las une.
+
+### Integridad e inmutabilidad
+
+* Tablas de **solo inserción**: `solicitudes_prediccion`, `solicitud_familias`,
+  `predicciones`, `calidad_observaciones`, `envios_observacion`,
+  `observaciones_historial` y `ventas_historicas`. Un trigger rechaza `UPDATE`,
+  `DELETE` y `TRUNCATE`: una solicitud o predicción histórica no se puede sobrescribir.
+* `observaciones` admite `UPDATE` (corrección de una venta) pero no `DELETE`
+  ni `TRUNCATE`; cada cambio deja su fila en `observaciones_historial`.
+
+### Idempotencia de observaciones
+
+Por cada envío, en **una transacción** y con un *advisory lock* por (tienda, fecha)
+que serializa envíos concurrentes del mismo día:
+
+1. se compara cada venta limpia con la existente;
+2. se inserta el envío con `registros_nuevos` y `registros_modificados`;
+3. clave nueva → `INSERT`; valor distinto → `UPDATE` + fila en el historial;
+   valor igual → nada.
+
+`registros_guardados` = nuevos + modificados: reenviar lo mismo da 0 (E09).
+
+### Transacciones
+
+Cada operación de la API es una unidad de trabajo (`app.db.conexion.transaccion`):
+la solicitud, sus familias, predicciones y observaciones de calidad se guardan
+todas o ninguna. Los errores de conexión se traducen a `BaseDatosNoDisponible`
+(la API responderá 503 en la etapa 4); los de integridad se propagan como
+errores de programación. El motor usa `pool_pre_ping` (reconecta tras un corte)
+y `connect_timeout`.
+
+### Migraciones
+
+Alembic 1.14.1 (misma versión que fijan las constraints de Airflow 2.10.5).
+`migraciones/versions/0001_esquema_inicial.py` crea tablas, restricciones,
+índices, triggers y la vista; `downgrade` la revierte. Las pruebas verifican
+`upgrade → downgrade → upgrade` y que el esquema migrado coincida con
+`app/db/esquema.py` (comparación de Alembic sin diferencias).
+
+*Alternativas descartadas:* ORM declarativo (las operaciones son inserciones y
+un *upsert* controlado; SQLAlchemy Core es más explícito); `ON CONFLICT DO UPDATE`
+directo (no permite conocer el valor anterior para el historial ni contar
+modificados sin una segunda lectura).
+
+### Verificación
+
+* `tests/integracion/` (45 pruebas, PostgreSQL real): migraciones
+  up/down/up y esquema idéntico al modelo, carga idempotente y atómica con
+  detección de archivos modificados, inserción y consulta de solicitudes con
+  promociones reales y supuestas, rechazos, varias solicitudes del mismo día,
+  inmutabilidad (`UPDATE`/`DELETE`/`TRUNCATE` rechazados), restricciones e
+  integridad referencial, atomicidad ante un fallo a mitad de transacción,
+  idempotencia y modificación de observaciones con historial, envíos
+  concurrentes, observación de una fecha del histórico (manda el histórico) y
+  relación predicción ↔ venta real.
+* Errores de conexión: servidor inaccesible (prueba unitaria, falla en < 10 s),
+  conexión cortada a mitad de transacción y recuperación del pool tras un corte.
+* Mutaciones verificadas: quitar el *advisory lock* hace fallar la prueba de
+  concurrencia (3 de 3 ejecuciones); contar como modificado un valor igual hace
+  fallar 10 pruebas.
+* `scripts/verificar_persistencia_docker.sh`: datos, migración y cargas intactos
+  tras `docker compose restart db` y tras `down` + `up`; la base de Airflow no
+  contiene tablas del producto y usa otro volumen.
+* Con los datos reales de `raw/` (solo localmente): carga de 83 052 filas en
+  13 s, segunda carga en 0.1 s, y lectura idéntica a los CSV.
+
+## 12. Integración continua (GitHub Actions)
+
+* **Disparadores:** `pull_request` hacia `main` (apertura y cada push a la
+  rama) y `push` a `main`. `concurrency` cancela ejecuciones obsoletas de la
+  misma rama.
+* **Jobs independientes** (calidad, unitarias, integración, persistencia) y un
+  job agregador **`CI resultado`**, que es el único check obligatorio: si se
+  agregan jobs, basta con incluirlos en su `needs`.
+* **Sin credenciales en el workflow:** el PostgreSQL de servicio usa `trust`
+  (solo accesible dentro del runner efímero); la verificación con Compose
+  genera claves aleatorias y las enmascara (`::add-mask::`). *Alternativa
+  descartada:* una contraseña fija de prueba en el YAML, aunque sea de CI.
+* **Reproducibilidad:** acciones fijadas por SHA de commit (con el tag como
+  comentario), `ubuntu-24.04`, Python 3.11 y dependencias de `requirements/`.
+* **Calidad:** ruff con reglas E, F, W e I. Las correcciones al código ya
+  aprobado son solo de formato (orden de imports y una línea larga), en un
+  commit propio y con la suite completa sin cambios.
+* **Fuera de alcance:** no hay despliegue ni publicación de imágenes.
+
 ## Pendientes de decidir (etapas siguientes)
 
+
 * Umbral de antigüedad de observaciones para advertir (D3), etapa 4.
-* Persistir las columnas del contrato anterior en la etapa 3.
