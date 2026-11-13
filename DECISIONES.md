@@ -661,20 +661,40 @@ verifica **antes** de `joblib.load`. El envoltorio `pyfunc`
 
 **Hallazgos de la implementación (determinismo de bytes):**
 
-1. **Número de hilos.** Los bytes de `modelo.joblib` cambian con el número de
-   hilos de OpenMP (1, 2 y 8 hilos dieron tres SHA distintos con las mismas
-   predicciones). Se fijan **dentro del proceso** con `threadpoolctl`
-   (`HILOS_ENTRENAMIENTO`, 4 por defecto, registrado en el manifiesto); así el
-   SHA no depende de `OMP_NUM_THREADS` ni del número de CPU.
+1. **Hilos de OpenMP.** El HGB paraleliza con OpenMP:
+   * con distinto número de hilos (1, 2, 8) los bytes de `modelo.joblib` cambian;
+   * incluso con un número **fijo** de hilos (4), el orden de las reducciones
+     paralelas varía entre ejecuciones: con los datos reales, en ~1 de cada 3
+     entrenamientos un valor de un nodo cambia en el último bit (≈1e-17), y en
+     el límite podría cambiar el redondeo de una cantidad sugerida;
+   * con **1 hilo** el entrenamiento es determinista byte a byte (5 de 5
+     entrenamientos idénticos con los datos reales), a cambio de ~40 % más de
+     tiempo (19 s frente a 14 s el modelo definitivo).
+
+   Por eso `HILOS_ENTRENAMIENTO=1` por defecto, fijado **dentro del proceso** con
+   `threadpoolctl` (no depende de `OMP_NUM_THREADS` ni del número de CPU) y
+   registrado en el manifiesto; `reproducir` usa el valor registrado. Con los
+   datos sintéticos (40 iteraciones) la variación no aparecía: se detectó al
+   verificar con los datos reales.
 2. **Identidad de objetos en `pickle`.** `pickle` reutiliza referencias a un
    mismo objeto: una configuración con cadenas literales y otra leída de JSON,
-   iguales en valor, producían bytes distintos. El registro también toma la
-   configuración **del manifiesto releído**, igual que `reproducir`.
+   iguales en valor, producen bytes distintos de forma determinista (medido con
+   1 hilo). El registro toma la configuración **del manifiesto releído**, igual
+   que `reproducir`.
 
 Con ambos ajustes, dos entrenamientos en procesos independientes (con
 `PYTHONHASHSEED` y `OMP_NUM_THREADS` distintos) dan el **mismo SHA-256**, y la
-reproducción desde MLflow tras modificar PostgreSQL resulta `identica`. Las
-pruebas lo exigen.
+reproducción desde MLflow tras modificar PostgreSQL resulta `identica`. Si en
+otro entorno los bytes difirieran, `reproducir` informa `equivalente` cuando las
+predicciones y métricas están dentro de la tolerancia (diseño aprobado).
+
+**Defecto encontrado en MLflow 2.22:** `mlflow.artifacts.download_artifacts`
+resuelve los artefactos `mlflow-artifacts:/…` con la URI de tracking **global**
+aunque se le pase `tracking_uri`. Sin `MLFLOW_TRACKING_URI` las descargas
+fallaban o iban a un `./mlruns` local. Toda descarga pasa por
+`app/modelo/mlflow_util.py:descargar_de_ejecucion`, que resuelve la URI de
+artefactos de la ejecución contra el servidor indicado; una prueba lo verifica
+en un proceso sin estado global.
 
 ### Proveedor, caché y recarga (M7–M10, M13)
 
@@ -726,7 +746,8 @@ nada en MLflow. No hay opción para omitirlo.
   coherente corregida al volver MLflow; alias a una versión inválida o borrado;
   8 hilos durante 10 cambios de alias entre dos modelos distintos.
 * Mutaciones detectadas: promover un candidato no válido, caché sin verificar
-  el SHA, usar la caché con un modelo cargado.
+  el SHA, usar la caché con un modelo cargado. La prueba de descargas sin estado
+  global falla con la implementación anterior.
 * `scripts/verificar_persistencia_docker.sh` con la imagen oficial de MLflow:
   experimento, versión, alias y artefacto intactos tras `restart` y `down`/`up`;
   volúmenes de MLflow separados de las dos bases.

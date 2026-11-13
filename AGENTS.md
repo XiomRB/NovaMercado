@@ -140,8 +140,10 @@ tests/fixtures/ catálogo y ejemplos sintéticos: las pruebas nunca leen raw/
 * El alias `vigente` solo se mueve en `app/modelo/registro.py`, como último paso
   y con un candidato válido (T1–T4b, D1, C1–C3). Ningún modo omite validaciones.
 * El entrenamiento y la evaluación leen la **copia releída** (datos y
-  configuración del manifiesto) y fijan los hilos (`hilos_fijos`): sin eso los
-  bytes de `modelo.joblib` no se reproducen.
+  configuración del manifiesto) y fijan los hilos (`hilos_fijos`, 1 por
+  defecto): sin eso los bytes de `modelo.joblib` no se reproducen.
+* Descargar artefactos solo con `app/modelo/mlflow_util.descargar_de_ejecucion`
+  (MLflow 2.22 ignora `tracking_uri` con `artifact_uri="runs:/…"`).
 * `entrenar_mlflow` exige Git limpio (`app/modelo/git_estado.py`); no agregar
   opciones para omitirlo. Las pruebas llaman a `entrenar_y_registrar` con un commit
   de prueba.
