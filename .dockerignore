@@ -1,0 +1,26 @@
+# Solo se excluyen rutas que Git ya ignora: la etapa "procedencia" compara el contexto
+# con el commit y un archivo versionado ausente marcaría el árbol como sucio.
+# Datos, credenciales y artefactos NUNCA entran en la imagen.
+raw/
+data/
+.env
+instrucciones_lab2.md
+Anexo_ContratoDeServicio.md
+modelos/
+mlruns/
+mlartifacts/
+*.joblib
+*.pkl
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+.venv/
+venv/
+reportes-ci/
+.vscode/
+.idea/
+.DS_Store

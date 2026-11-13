@@ -1,12 +1,41 @@
-# NovaMercado — servicios de datos (etapa 3) y MLflow (etapa 5).
-# La API en contenedor y Airflow se agregan en las etapas 6–7.
+# NovaMercado — producto completo con Docker Compose (etapas 3, 5 y 6). Airflow: etapa 7.
 #
-# Uso:  cp .env.example .env   (y cambie las claves)
-#       docker compose up -d
+# Uso:  cp .env.example .env        (y cambie las claves)
+#       coloque los archivos publicados en raw/   (ver README.md)
+#       docker compose up -d --build
 #
 # Las credenciales vienen de .env (excluido de git); compose falla si faltan.
+# Arranque (DECISIONES.md §15): "preparar" migra y carga raw/ (una sola vez por
+# contenido), "entrenamiento-inicial" entrena y registra el primer modelo si
+# PostgreSQL todavía no tiene un vigente, y la "api" lo carga sola cuando aparece.
 
 name: novamercado
+
+# Configuración común de la imagen de la aplicación (api, preparar, entrenamiento-inicial).
+# Solo se pasan las variables necesarias (sin env_file): el DATABASE_URL del .env apunta a
+# localhost:5433 para el equipo; en los contenedores la URL se arma por partes.
+x-entorno-aplicacion: &entorno-aplicacion
+  POSTGRES_DB: ${POSTGRES_DB:?defina POSTGRES_DB en .env}
+  POSTGRES_USER: ${POSTGRES_USER:?defina POSTGRES_USER en .env}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD en .env}
+  DB_HOST: db
+  DB_PORT: "5432"
+  DB_TIMEOUT_CONEXION: ${DB_TIMEOUT_CONEXION:-5}
+  DB_TIMEOUT_CONSULTA: ${DB_TIMEOUT_CONSULTA:-5}
+  DB_MARGEN_CLIENTE: ${DB_MARGEN_CLIENTE:-2}
+  MODELO_ORIGEN: mlflow
+  MLFLOW_TRACKING_URI: http://mlflow:5000
+  MLFLOW_MODELO_NOMBRE: ${MLFLOW_MODELO_NOMBRE:-novamercado-ventas}
+  MLFLOW_ALIAS: ${MLFLOW_ALIAS:-vigente}
+  MLFLOW_HTTP_REQUEST_TIMEOUT: ${MLFLOW_HTTP_REQUEST_TIMEOUT:-5}
+  MLFLOW_HTTP_REQUEST_MAX_RETRIES: ${MLFLOW_HTTP_REQUEST_MAX_RETRIES:-0}
+  HILOS_ENTRENAMIENTO: ${HILOS_ENTRENAMIENTO:-1}
+
+x-aplicacion: &aplicacion
+  build:
+    context: .
+  image: novamercado-app:local
+  environment: *entorno-aplicacion
 
 services:
   # Base de datos del PRODUCTO: solicitudes, predicciones, observaciones y datos publicados.
@@ -66,8 +95,65 @@ services:
       retries: 30
     restart: unless-stopped
 
+  # Una sola ejecución en cada "up": migraciones (no-op si ya están) y carga idempotente
+  # de raw/ (por SHA-256; si raw/ falta pero los datos ya están cargados, se omite).
+  preparar:
+    <<: *aplicacion
+    command: ["sh", "-c", "alembic upgrade head && python -m app.db.carga --raw /datos/raw"]
+    volumes:
+      - ${RAW_DIR:-./raw}:/datos/raw:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  # Una sola ejecución en cada "up": si PostgreSQL ya tiene un vigente confirmado, termina
+  # en segundos sin entrenar; si no, entrena el primero (o el respaldo baseline).
+  entrenamiento-inicial:
+    <<: *aplicacion
+    command: ["python", "-m", "app.modelo.arranque"]
+    depends_on:
+      preparar:
+        condition: service_completed_successfully
+      mlflow:
+        condition: service_healthy
+    restart: "no"
+
+  # API (puerto 8000). No espera al entrenamiento: arranca con /health en 503 (sin modelo)
+  # y carga el primer modelo sola, sin reinicio, en cuanto PostgreSQL lo confirma.
+  api:
+    <<: *aplicacion
+    environment:
+      <<: *entorno-aplicacion
+      MODELO_CACHE_DIR: /app/modelos/cache
+      MODELO_INTERVALO_REFRESCO: ${MODELO_INTERVALO_REFRESCO:-15}
+      SALUD_INTERVALO: ${SALUD_INTERVALO:-10}
+      SALUD_LIMITE: ${SALUD_LIMITE:-3}
+    volumes:
+      - modelo_cache:/app/modelos/cache
+    ports:
+      # Por defecto solo en 127.0.0.1; para acceder desde otra máquina:
+      # API_DIRECCION_PUBLICACION=0.0.0.0 en .env (la API no tiene autenticación).
+      - "${API_DIRECCION_PUBLICACION:-127.0.0.1}:${API_PUERTO_HOST:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      preparar:
+        condition: service_completed_successfully
+      mlflow:
+        condition: service_started
+    healthcheck:
+      # 200 = ok o degradado (con modelo); 503 = sin modelo (durante el primer entrenamiento)
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 600s
+    restart: unless-stopped
+
 volumes:
   db_producto:
   db_airflow:
   mlflow_datos:
   mlflow_artefactos:
+  modelo_cache:

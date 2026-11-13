@@ -153,3 +153,40 @@ def test_funciones_de_triggers_se_eliminan_en_downgrade(url_bd_vacia):
                                    "WHERE n.nspname = 'public'")).scalars().all()
     m.dispose()
     assert funciones == []
+
+
+# ------------------------------------------------------------- etapa 6 (E6-7)
+def test_raw_ausente_con_datos_ya_cargados_se_omite(motor, tmp_path):
+    from app.db.carga import DatosPublicadosAusentes, cargar_datos_publicados
+    with pytest.raises(DatosPublicadosAusentes, match="colóquelos en la carpeta raw/"):
+        cargar_datos_publicados(motor, tmp_path / "vacia")          # primer arranque sin raw/
+    cargar_sinteticos(motor, tmp_path / "raw")
+    r = cargar_datos_publicados(motor, tmp_path / "no_existe")      # reinicio sin raw/
+    assert set(r.values()) == {"ya_cargado_sin_raw"}
+
+
+def test_triggers_de_las_tablas_de_promocion(motor):
+    from sqlalchemy.exc import DBAPIError
+    with motor.connect() as c:
+        filas = c.execute(text("SELECT tgrelid::regclass::text, tgname FROM pg_trigger WHERE NOT tgisinternal "
+                               "AND tgrelid::regclass::text IN ('decisiones_promocion', 'resoluciones_promocion', "
+                               "'bloqueo_entrenamiento')")).all()
+    por_tabla = {}
+    for tabla, nombre in filas:
+        por_tabla.setdefault(tabla, set()).add(nombre)
+    for t in e.TABLAS_SOLO_INSERCION_PROMOCION:
+        assert por_tabla[t] == {f"trg_{t}_inmutable", f"trg_{t}_sin_truncate"}
+    assert por_tabla["bloqueo_entrenamiento"] == {"trg_bloqueo_entrenamiento_sin_borrado",
+                                                  "trg_bloqueo_entrenamiento_sin_truncate"}
+    for sql in ("DELETE FROM bloqueo_entrenamiento", "INSERT INTO bloqueo_entrenamiento (id) VALUES (2)",
+                "INSERT INTO bloqueo_entrenamiento (id) VALUES (1)"):
+        with pytest.raises(DBAPIError), motor.begin() as c:
+            c.execute(text(sql))
+    with motor.begin() as c:
+        d = c.execute(text("INSERT INTO decisiones_promocion (nombre_modelo, version, run_id, ruta_artefacto, "
+                           "sha256_artefacto, epoca, origen) VALUES ('m','1','r','x', repeat('a', 64), 1, 'p') "
+                           "RETURNING decision_id")).scalar()
+    for sql in (f"UPDATE decisiones_promocion SET version = '2' WHERE decision_id = {d}",
+                f"DELETE FROM decisiones_promocion WHERE decision_id = {d}", "TRUNCATE decisiones_promocion CASCADE"):
+        with pytest.raises(DBAPIError), motor.begin() as c:
+            c.execute(text(sql))

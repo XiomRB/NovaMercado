@@ -59,20 +59,31 @@ def construir_monitor(persistencia: Persistencia, gestor: GestorModelo, orquesta
         requeridos=requeridos if requeridos is not None else componentes_requeridos(),
         modelo_cargado=gestor.cargado,
         modelo_actualizado=getattr(gestor, "actualizado", lambda: True),
+        motivos_modelo=getattr(gestor, "motivos_degradacion", lambda: []),
+        vigencia_modelo=getattr(gestor, "vigencia", lambda: None),
         intervalo=intervalo if intervalo is not None else segundos("SALUD_INTERVALO", 10),
         limite=limite if limite is not None else segundos("SALUD_LIMITE", 3),
     )
 
 
-def construir_proveedor():
-    """``MODELO_ORIGEN=mlflow`` (producto): Model Registry con caché local.
-    ``MODELO_ORIGEN=archivo``: artefacto local de la etapa 4 (desarrollo y pruebas)."""
+def construir_proveedor(motor=None):
+    """``MODELO_ORIGEN=mlflow`` (producto): vigente según PostgreSQL (``motor``),
+    artefacto desde MLflow y caché local. ``MODELO_ORIGEN=archivo``: artefacto local de
+    la etapa 4 (desarrollo y pruebas)."""
     if modelo_origen() == "archivo":
         return ProveedorArchivo(ruta_modelo())
     from app.modelo.cache import CacheModelos
     from app.modelo.proveedor_mlflow import ProveedorMLflow
     return ProveedorMLflow(mlflow_tracking_uri(), mlflow_modelo_nombre(), mlflow_alias(),
-                           CacheModelos(ruta_cache_modelos()))
+                           CacheModelos(ruta_cache_modelos()), motor=motor)
+
+
+def construir_gestor(proveedor, intervalo: float):
+    from app.modelo.gestor import GestorVigente
+    from app.modelo.proveedor_mlflow import ProveedorMLflow
+    if isinstance(proveedor, ProveedorMLflow):
+        return GestorVigente(proveedor, intervalo=intervalo)
+    return GestorModelo(proveedor, intervalo=intervalo)
 
 
 def desde_entorno() -> Dependencias:
@@ -81,7 +92,7 @@ def desde_entorno() -> Dependencias:
 
     motor = crear_motor()
     persistencia = PersistenciaPostgres(motor)
-    gestor = GestorModelo(construir_proveedor(), intervalo=segundos("MODELO_INTERVALO_REFRESCO", 15))
+    gestor = construir_gestor(construir_proveedor(motor), segundos("MODELO_INTERVALO_REFRESCO", 15))
     orquestador = OrquestadorNoConfigurado()
     monitor = construir_monitor(persistencia, gestor, orquestador)
     return Dependencias(persistencia, gestor, monitor, orquestador, motor)

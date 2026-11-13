@@ -30,7 +30,8 @@ DIAS_HISTORIA = 60   # ventana de ventas previas; cubre rezagos (28) y medias mÃ
 
 
 def predecir(payload: object, persistencia: Persistencia, gestor: GestorModelo) -> dict:
-    modelo = gestor.actual()
+    servido = gestor.servido()          # una sola referencia: modelo y estado de vigencia coherentes
+    modelo = servido.modelo
     catalogo = persistencia.catalogo()
     try:
         solicitud, registro = limpiar_solicitud_prediccion(
@@ -63,6 +64,7 @@ def predecir(payload: object, persistencia: Persistencia, gestor: GestorModelo) 
             "predicciones": [{"familia_id": p.familia_id, "venta_esperada": p.venta_esperada,
                               "cantidad_sugerida": p.cantidad_sugerida} for p in predicciones],
             "calidad": registro.como_dict(),
+            "modelo_es_vigente": servido.es_vigente,
         })
         u.registrar_prediccion(payload=payload, solicitud=solicitud, registro=registro, predicciones=predicciones,
                                nombre_modelo=modelo.nombre, version_modelo=modelo.version)

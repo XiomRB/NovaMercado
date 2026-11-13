@@ -7,22 +7,59 @@ producto, sugiere la cantidad a tener disponible según el costo de faltantes y
 sobrantes, se defiende de datos defectuosos, registra la operación y se
 reentrena automáticamente.
 
-> **Estado:** etapas 0–4 integradas (calidad de datos, contrato, modelos,
-> backtesting, persistencia, CI y API). Etapa 5 (MLflow) en revisión. El
-> arranque completo con Docker y Airflow llegan en las etapas 6–7; este README
-> se completará con `docker compose up` cuando existan.
+> **Estado:** etapas 0–5 integradas (calidad de datos, contrato, modelos,
+> backtesting, persistencia, CI, API y MLflow). Etapa 6 (producto con Docker
+> Compose y arranque automático) en revisión. Airflow llega en la etapa 7.
 
-## Arquitectura (etapa 5)
+## Levantar el producto desde cero (etapa 6)
+
+Requiere Docker con Compose v2 (memoria recomendada para Docker: 4 GB o más).
+
+```bash
+git clone https://github.com/XiomRB/NovaMercado.git && cd NovaMercado   # clonar (no descargar un ZIP)
+cp .env.example .env                  # y cambie las claves
+# coloque los archivos publicados en raw/ (ver "Datos publicados")
+docker compose up -d --build
+```
+
+* **`preparar`** aplica las migraciones y carga `raw/` (montado de solo lectura;
+  los datos nunca entran en la imagen). En cada reinicio responde `ya_cargado`.
+* **`entrenamiento-inicial`** entrena, valida y registra el primer modelo si
+  PostgreSQL todavía no tiene un vigente. En cada reinicio termina en segundos
+  sin entrenar. Progreso: `docker compose logs -f entrenamiento-inicial`.
+* **`api`** (http://127.0.0.1:8000) arranca de inmediato con `/health` en 503
+  (sin modelo) y carga el primer modelo sola cuando se confirma. Tiempo hasta
+  `/health` `ok`: unos minutos (límite del enunciado: 10).
+* `docker compose stop`/`start` o `down`/`up` **sin `-v`** conservan los datos,
+  el registro de MLflow y el modelo (`docker compose down -v` los borra).
+* Acceso desde otra máquina: `API_DIRECCION_PUBLICACION=0.0.0.0` en `.env`
+  (la API no tiene autenticación; por defecto solo se publica en 127.0.0.1).
+* La imagen registra el commit del que se construyó y solo puede entrenar si el
+  árbol de Git estaba limpio (`procedencia.json`, verificado antes de entrenar).
+  Por eso hay que construirla desde un clon, no desde un ZIP.
+
+| Problema | Qué hacer |
+|---|---|
+| `preparar` termina con "faltan los archivos publicados" | coloque los CSV en `raw/` y vuelva a ejecutar `docker compose up -d` |
+| `preparar` termina con "cambió desde que se cargó" | `raw/` tiene otro contenido que el ya cargado; no se mezclan versiones (restaure los archivos originales) |
+| `entrenamiento-inicial` sale con código 2 | la imagen se construyó con cambios sin confirmar: confirme o descarte los cambios y `docker compose build` |
+| `/health` sigue en 503 | `docker compose logs entrenamiento-inicial` (código 3: ningún modelo superó las validaciones) |
+
+## Arquitectura (etapas 5 y 6)
 
 ```
- tiendas ──HTTP──► API (FastAPI) ─────────────────────► PostgreSQL del producto (db)
-                    │ GestorModelo ◄── ProveedorMLflow ◄── caché local validada (MODELO_CACHE_DIR)
-                    │       ▲ cada 15 s: versión del alias "vigente"
-                    │       │
-                    │   MLflow (servicio "mlflow") ── mlflow_datos (SQLite: experimentos, registro, alias)
-                    │       ▲                       └ mlflow_artefactos (modelo.joblib, copia de datos, backtest)
- entrenar_mlflow ───┘───────┘ lee db → copia inmutable → backtest + criterio → registra → valida → alias
- airflow-db (separada; etapa 7)
+ tiendas ──HTTP──► api (FastAPI) ───────────────────────────► db: PostgreSQL del producto
+                    │ GestorVigente: cada 15 s lee el vigente     ├ operación y datos publicados
+                    │ CONFIRMADO en PostgreSQL (fuente de verdad) ├ decisiones/resoluciones de promoción
+                    │ y descarga el artefacto de MLflow           └ concesión de entrenamiento
+                    ├ caché validada (volumen modelo_cache)
+                    ▼
+                  mlflow ── mlflow_datos (experimentos, registro, alias: reflejo del vigente)
+                    ▲    └ mlflow_artefactos (modelo.joblib, copia de datos, backtest)
+ entrenamiento-inicial / entrenar_mlflow:
+   supervisor (concesión) ─► hijo: copia inmutable → backtest + criterio → registra "pendiente" → T3/T4a/T4b
+   supervisor: decisión en PostgreSQL → tags y alias en MLflow → confirmación en PostgreSQL
+ preparar: migraciones + carga de raw/          airflow-db (separada; etapa 7)
 ```
 
 ## Datos publicados
@@ -82,30 +119,43 @@ python -m app.db.carga --raw raw  # carga los datos publicados (idempotente)
 
 Diseño de tablas, claves, restricciones e idempotencia: `DECISIONES.md` §11.
 
-## MLflow (etapa 5)
+## MLflow (etapas 5 y 6)
 
 ```bash
+# en el producto, dentro del contenedor (procedencia de la imagen):
+docker compose run --rm entrenamiento-inicial python -m app.modelo.entrenar_mlflow --promover siempre
+# o desde el equipo (repositorio limpio):
 docker compose up -d --wait db airflow-db mlflow     # UI en http://localhost:5000
 set -a && . ./.env && set +a
-python -m app.modelo.entrenar_mlflow                 # entrena, evalúa, registra y (si es válido) asigna el alias
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+python -m app.modelo.entrenar_mlflow
 ```
 
-* **`entrenar_mlflow`** requiere un repositorio **sin cambios sin confirmar**
-  (si no, termina con un mensaje claro y no crea nada). Lee la base, guarda una
-  copia inmutable de los datos en la ejecución, evalúa el candidato frente al
-  baseline en 7 cortes de 28 días (≥ 5 % menos costo, gana ≥ 5 de 7, ningún
-  corte > 10 % peor), registra `modelo.joblib`, verifica la reproducción del
-  backtest y la integridad del artefacto, y solo entonces mueve el alias.
-  `--promover si_no_hay` (por defecto: solo si no hay alias), `siempre`
-  (reemplazo manual explícito; nunca omite validaciones) o `nunca`.
+* **`entrenar_mlflow`** exige que el código corresponda a un commit limpio: en el
+  equipo, el árbol de Git sin cambios; en un contenedor, `procedencia.json`
+  (código y dependencias verificados). Entrena bajo una **concesión** exclusiva
+  (nunca dos entrenamientos a la vez) en un proceso hijo vigilado. Guarda una
+  copia inmutable de los datos, evalúa el candidato frente al baseline en 7
+  cortes de 28 días (≥ 5 % menos costo, gana ≥ 5 de 7, ningún corte > 10 % peor),
+  registra `modelo.joblib` en estado `pendiente` y verifica T3 (artefacto
+  descargado utilizable), T4a (reproducción del backtest) y T4b (identidad).
+  Solo entonces el supervisor lo autoriza y, si corresponde, lo promueve:
+  **PostgreSQL es la fuente de verdad del vigente**; el alias de MLflow es su
+  reflejo. `--promover si_no_hay` (por defecto: solo si no hay vigente),
+  `siempre` (reemplazo manual explícito; nunca omite validaciones) o `nunca`.
+  Códigos de salida: 0 válido · 3 no válido · 2 procedencia · 4 resultado del
+  alias indeterminado (promoción o reconciliación) · 5 otro entrenamiento en curso
+  (`--esperar SEG`) · 6 concesión perdida · 1 error (incluido un alias que la
+  reconciliación no pudo aplicar: no se entrena).
 * **`python -m app.modelo.reproducir --run-id <id>`** reconstruye un
   entrenamiento solo desde MLflow (aunque la base haya cambiado) e informa
   `identica`, `equivalente` o `no_reproduce`.
-* La API carga la versión del alias `vigente`; un cambio de alias se detecta en
-  ≤ 20 s sin reiniciar. Con MLflow caído sigue prediciendo con el modelo cargado
-  (o, al arrancar, con la última versión válida de la caché) y `/health`
-  responde `degradado`.
+* La API sirve el vigente **confirmado en PostgreSQL**; una promoción se activa
+  sin reiniciar en ≤ 15 s más la descarga. Con MLflow caído sigue prediciendo con
+  el modelo cargado (o, al arrancar, con la entrada de la caché del vigente) y
+  `/health` responde `degradado`. Si una promoción confirmada no se puede
+  descargar, sigue con el modelo anterior **marcado como tal** (E-ANT). Si al
+  arrancar PostgreSQL no responde, sirve la última entrada confirmada de la caché
+  en estado `sin_verificar` hasta poder consultarlo.
 * Desarrollo sin MLflow: `MODELO_ORIGEN=archivo` y
   `python -m app.modelo.entrenar_local` (artefacto local de la etapa 4).
 
@@ -113,9 +163,9 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 | Endpoint | Etapa 4 |
 |---|---|
-| `POST /v1/prediccion` | limpieza, advertencias, predicción y registro en PostgreSQL |
+| `POST /v1/prediccion` | limpieza, advertencias, predicción y registro en PostgreSQL; `version_modelo` es la versión que produjo la respuesta y `modelo_es_vigente` (agregado, etapa 6) indica si coincide con el vigente observado |
 | `POST /v1/observaciones` | registro idempotente (`registros_guardados` = nuevos + modificados) |
-| `GET /modelo` | modelo cargado: `nombre`, `alias` y `version` del Registry (con `MODELO_ORIGEN=archivo`: alias `local`) |
+| `GET /modelo` | modelo que usa el servicio: `nombre`, `alias`, `version`; campos agregados (etapa 6): `es_vigente`, `estado_vigencia` (`vigente`, `actualizando`, `anterior`, `sin_verificar`), `version_vigente` (vigente observado; ausente en `sin_verificar`) y `motivo` |
 | `GET /health` | `ok` / `degradado` + `motivo` (200); 503 sin modelo |
 | `POST /admin/reentrenar`, `GET /admin/reentrenar/{id}` | 503 / 404 hasta la etapa 7 (Airflow) |
 
@@ -162,6 +212,7 @@ abrirlo y con cada push a su rama) y en cada push a `main`:
 | Pruebas unitarias y de regresión | toda la suite sin base de datos (etapas 1–3), sin `raw/` |
 | Pruebas de integración (PostgreSQL) | migraciones up/down/up y `pytest -m integracion` contra un PostgreSQL 16 de servicio |
 | Persistencia con Docker Compose | `scripts/verificar_persistencia_docker.sh` |
+| Producto con Docker Compose (extremo a extremo) | `scripts/verificar_producto_docker.sh`: imagen (sin datos ni bytecode, procedencia del commit, dependencias del lock), arranque desde cero con datos sintéticos hasta `ok`, contrato, reinicios sin entrenar de nuevo, MLflow caído y de vuelta, E-ANT y procedencia que no coincide |
 | **CI resultado** | aprueba solo si todos los anteriores aprobaron; es el check obligatorio para fusionar |
 
 El workflow no contiene credenciales: el PostgreSQL de servicio usa
@@ -177,6 +228,7 @@ ruff check .
 python -m pytest -q -m "not integracion"
 bash scripts/pruebas_integracion_local.sh
 bash scripts/verificar_persistencia_docker.sh
+bash scripts/verificar_producto_docker.sh     # requiere el árbol de Git limpio
 ```
 
 ## Experimento de modelos (etapa 2)
@@ -196,18 +248,20 @@ app/
   calidad/        limpieza de datos: reparar / advertir / rechazar
   schemas/        modelos Pydantic del contrato
   db/             esquema, conexión/transacciones, carga de datos, repositorio
-  modelo/         proveedores (archivo, MLflow), caché, gestor (recarga), entrenamiento,
-                  copia de datos, evaluación y criterio, registro, reproducción, Git
+  modelo/         proveedores (archivo, MLflow), caché, gestor (vigencia), entrenamiento,
+                  copia de datos, evaluación y criterio, registro (hijo), promoción,
+                  concesión (bloqueo), supervisor (ciclo_entrenamiento), arranque,
+                  procedencia, dependencias, reproducción, Git
   servicios/      predicción, observaciones, rechazos, interfaz de persistencia
   main.py         FastAPI (endpoints y manejo de errores)
   salud.py        monitor de salud en segundo plano
   orquestador.py  interfaz del reentrenamiento (Airflow en la etapa 7)
   config.py       configuración por variables de entorno
 ml/               variables, modelos, costo y cantidad sugerida, backtesting
-migraciones/      Alembic (versions/0001_esquema_inicial.py)
+migraciones/      Alembic (0001 esquema inicial, 0002 concesión y promociones)
 scripts/          experimento, verificación de persistencia, pruebas locales
 reportes/etapa2/  resultados del backtesting
-requirements/     comun.txt, api.txt, dev.txt (versiones fijas)
+requirements/     comun.txt, api.txt, dev.txt (versiones fijas) y api.lock.txt (todas, con hashes)
 tests/
   unit/           pruebas por módulo y de robustez
   ml/             sin fuga temporal, costo/cuantil, modelos y backtesting
@@ -217,7 +271,7 @@ tests/
   integracion/    PostgreSQL y MLflow reales: migraciones, carga, idempotencia, API, registro, alias
   fixtures/       catálogo y ejemplos sintéticos (sin datos originales)
 .github/          workflow de CI y su script de resumen
-docker-compose.yml, .env.example, alembic.ini
+Dockerfile, .dockerignore, .gitattributes, docker-compose.yml, .env.example, alembic.ini
 AGENTS.md         contexto para agentes de programación
 DECISIONES.md     decisiones técnicas y de producto
 ```

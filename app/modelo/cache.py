@@ -1,9 +1,16 @@
 """Caché local de modelos registrados (para predecir con MLflow caído).
 
 Estructura: ``<dir>/<versión>/modelo.joblib`` + ``metadatos.json`` (nombre, alias,
-versión, ``run_id``, ``ruta_artefacto``, ``sha256_artefacto`` copiado del tag del
-Registry). La escritura es atómica (directorio temporal + ``rename``) y se
-conservan las ``conservar`` versiones más recientes.
+versión, ``run_id``, ``ruta_artefacto``, ``sha256_artefacto``, ``decision_id`` y
+``secuencia`` de la promoción **confirmada** en PostgreSQL; etapa 6). La escritura es
+atómica (directorio temporal + ``rename``) y se conservan las ``conservar`` versiones
+más recientes. Solo se guardan versiones confirmadas.
+
+Regla de uso (etapa 6, plan §7.2): la caché **nunca prevalece sobre una respuesta
+válida de PostgreSQL**. Con un vigente V solo vale la entrada con el mismo
+``decision_id`` y SHA (:meth:`CacheModelos.entrada_para`); solo con PostgreSQL
+inaccesible se elige la entrada válida de mayor ``secuencia``
+(:meth:`CacheModelos.mejor_por_secuencia`).
 
 Validación al leer, versión por versión (de la más reciente a la más antigua):
 metadatos legibles → SHA-256 **recalculado** igual al de los metadatos (antes de
@@ -31,7 +38,7 @@ from app.modelo.proveedores import ModeloNoDisponible
 logger = logging.getLogger(__name__)
 
 METADATOS = "metadatos.json"
-CAMPOS = ("nombre", "alias", "version", "run_id", "ruta_artefacto", "sha256_artefacto")
+CAMPOS = ("nombre", "alias", "version", "run_id", "ruta_artefacto", "sha256_artefacto", "decision_id", "secuencia")
 
 
 @dataclass(frozen=True)
@@ -101,8 +108,41 @@ class CacheModelos:
             raise ArtefactoInvalido("metadatos de la caché incompletos")
         if str(metadatos["version"]) != version:
             raise ArtefactoInvalido("la versión de los metadatos no corresponde a la carpeta")
+        for campo in ("decision_id", "secuencia"):          # confirmada en PostgreSQL (etapa 6)
+            v = metadatos[campo]
+            if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+                raise ArtefactoInvalido(f"la entrada de la caché no tiene un {campo} confirmado válido")
         artefacto = validar_archivo(carpeta / NOMBRE_ARCHIVO, metadatos["sha256_artefacto"])
         return EntradaValida(artefacto, metadatos)
+
+    def entrada_para(self, decision_id: int, version: str, sha: str) -> EntradaValida | None:
+        """Entrada válida de exactamente esa decisión y ese SHA (o ``None``)."""
+        if self.archivo_si_coincide(str(version), sha) is None:
+            return None
+        try:
+            e = self.validar(str(version))
+        except ModeloNoDisponible as exc:
+            logger.warning("caché: versión %s descartada: %s", version, exc)
+            return None
+        m = e.metadatos
+        if int(m["decision_id"]) != int(decision_id) or m["sha256_artefacto"] != sha:
+            return None
+        return e
+
+    def mejor_por_secuencia(self) -> EntradaValida:
+        """Solo con PostgreSQL inaccesible: la entrada válida de mayor ``secuencia``."""
+        validas = []
+        motivos = []
+        for v in self.versiones():
+            try:
+                validas.append(self.validar(v))
+            except ModeloNoDisponible as exc:
+                motivos.append(f"versión {v}: {exc}")
+                logger.warning("caché: versión %s descartada: %s", v, exc)
+        if not validas:
+            detalle = "; ".join(motivos) if motivos else "la caché está vacía"
+            raise ModeloNoDisponible(f"no hay una versión válida en la caché ({detalle})")
+        return max(validas, key=lambda e: int(e.metadatos["secuencia"]))
 
     def primera_valida(self) -> EntradaValida:
         motivos = []

@@ -39,6 +39,7 @@ from app.modelo.registro import (
     descargar_copia,
     entorno,
     hilos_fijos,
+    modelos_de_manifiesto,
 )
 from ml.datos import CLAVE, filas_supervisadas
 
@@ -109,7 +110,7 @@ def reproducir(run_id: str, tracking_uri: str, cliente=None) -> ResultadoReprodu
 
         cfg, ev = config_desde_manifiesto(manifiesto)
         with hilos_fijos(manifiesto.get("hilos_entrenamiento", HILOS_POR_DEFECTO)):   # mismos hilos que el original
-            difs = comparar_metricas(registrada, evaluar(datos, ev, cfg).por_corte)
+            difs = comparar_metricas(registrada, evaluar(datos, ev, cfg, modelos_de_manifiesto(manifiesto)).por_corte)
             p, art = entrenar_definitivo(datos, cfg, mv.name)
         backtest_igual = not difs
         sha_rep = sha256_bytes(art.artefacto)

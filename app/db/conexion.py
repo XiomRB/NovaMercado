@@ -160,3 +160,37 @@ def verificar_conexion(motor: Engine) -> bool:
         return True
     except DBAPIError:
         return False
+
+
+def abrir_conexion_dedicada(url: str | None = None, timeout_consulta: float = 5.0,
+                            margen_cliente: float | None = None):
+    """Conexión **psycopg2 directa** para la concesión de entrenamiento (etapa 6, §4.1).
+
+    * Sin pool de SQLAlchemy: no hay ``pool_pre_ping`` ni reconexión. psycopg2 nunca
+      reconecta por sí solo, así que si la sesión se pierde, la siguiente operación
+      falla en vez de continuar silenciosamente en una sesión nueva (que no tendría
+      el advisory lock).
+    * ``autocommit``: no queda ninguna transacción abierta entre operaciones; las
+      transacciones condicionadas usan ``BEGIN``/``COMMIT`` explícitos.
+    * ``statement_timeout`` en el servidor y el vigilante del cliente (límite +
+      margen) como el resto de las conexiones; keepalives TCP para que el servidor
+      detecte pronto a un cliente desaparecido (y libere su sesión y su lock).
+    """
+    from sqlalchemy.engine import make_url
+
+    u = make_url(url or url_base_datos())
+    t_conexion = segundos("DB_TIMEOUT_CONEXION", 5)
+    margen = margen_cliente if margen_cliente is not None else segundos("DB_MARGEN_CLIENTE", 2)
+    ms = int(timeout_consulta * 1000)
+    try:
+        conn = psycopg2.connect(
+            host=u.host, port=u.port or 5432, user=u.username, password=u.password, dbname=u.database,
+            connect_timeout=max(int(t_conexion), 1),
+            options=f"-c statement_timeout={ms} -c idle_in_transaction_session_timeout={max(6 * ms, 30_000)}",
+            keepalives=1, keepalives_idle=30, keepalives_interval=5, keepalives_count=3,
+            application_name="novamercado-entrenamiento",
+            connection_factory=_fabrica_conexion(timeout_consulta + margen))
+    except psycopg2.Error as exc:
+        raise BaseDatosNoDisponible(f"base de datos no disponible: {exc}") from exc
+    conn.autocommit = True
+    return conn

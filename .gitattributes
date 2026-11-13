@@ -1,0 +1,6 @@
+# Finales de línea LF en el repositorio y en los clones (también en Windows): los blobs de
+# Git de procedencia.json deben coincidir con los archivos copiados a la imagen (etapa 6).
+* text=auto eol=lf
+*.gz binary
+*.png binary
+*.joblib binary

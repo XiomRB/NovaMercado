@@ -31,7 +31,9 @@ def test_prediccion_valida_cumple_el_contrato(cliente, deps, artefacto):
     assert r.status_code == 200
     cuerpo = r.json()
     RespuestaPrediccion.model_validate_json(r.text)
-    assert list(cuerpo) == ["tienda_id", "fecha", "version_modelo", "predicciones", "calidad"]
+    # campos del Anexo, en orden, más el campo agregado de la etapa 6
+    assert list(cuerpo) == ["tienda_id", "fecha", "version_modelo", "predicciones", "calidad", "modelo_es_vigente"]
+    assert cuerpo["modelo_es_vigente"] is True
     assert cuerpo["tienda_id"] == 5 and cuerpo["fecha"] == FECHA
     assert cuerpo["version_modelo"] == artefacto.version and isinstance(cuerpo["version_modelo"], str)
     assert [p["familia_id"] for p in cuerpo["predicciones"]] == [f["familia_id"] for f in valida()["familias"]]
@@ -194,7 +196,8 @@ def test_observacion_rechazada(cliente, deps):
 def test_modelo_vigente(cliente, artefacto):
     r = cliente.get("/modelo")
     assert r.status_code == 200
-    assert r.json() == {"nombre": "novamercado-ventas", "alias": "local", "version": artefacto.version}
+    assert r.json() == {"nombre": "novamercado-ventas", "alias": "local", "version": artefacto.version,
+                        "es_vigente": True, "estado_vigencia": "vigente", "version_vigente": artefacto.version}
 
 
 def test_health_ok(cliente):

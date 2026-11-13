@@ -127,10 +127,28 @@ jobs:
       - name: Reinicio y down/up sin perder datos (producto y MLflow); bases separadas
         run: bash scripts/verificar_persistencia_docker.sh
 
+  producto:
+    name: Producto con Docker Compose (extremo a extremo)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+      - name: Instalar dependencias (solo para generar los datos sintéticos)
+        run: pip install -r requirements/dev.txt
+      - name: Verificar que no se usan datos locales
+        run: test ! -e raw
+      - name: Imagen, arranque desde cero, contrato, reinicios, MLflow caído, E-ANT y procedencia
+        run: bash scripts/verificar_producto_docker.sh
+
   resultado:
     name: CI resultado
     if: always()
-    needs: [calidad, pruebas, integracion, persistencia]
+    needs: [calidad, pruebas, integracion, persistencia, producto]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
