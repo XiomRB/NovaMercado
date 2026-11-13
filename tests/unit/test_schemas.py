@@ -60,7 +60,9 @@ def test_respuesta_prediccion_serializa_como_el_contrato():
     js = r.model_dump(mode="json")
     assert js["fecha"] == "2025-11-17"
     assert js["version_modelo"] == "3"
-    assert set(js) == {"tienda_id", "fecha", "version_modelo", "predicciones", "calidad"}
+    # campos del Anexo más el agregado de la etapa 6 (se puede agregar, nunca omitir)
+    assert set(js) == {"tienda_id", "fecha", "version_modelo", "predicciones", "calidad", "modelo_es_vigente"}
+    assert js["modelo_es_vigente"] is True
     assert set(js["predicciones"][0]) == {"familia_id", "venta_esperada", "cantidad_sugerida"}
 
 
@@ -108,3 +110,17 @@ def test_modelo_y_salud():
     EstadoSalud(estado="degradado", motivo="MLflow no disponible", componentes={"mlflow": False})
     with pytest.raises(ValidationError):
         EstadoSalud(estado="degradado")
+
+
+def test_modelo_vigente_estados_de_vigencia_coherentes():
+    from app.schemas.contrato import ModeloVigente
+    base = {"nombre": "m", "alias": "vigente", "version": "1"}
+    assert ModeloVigente(**base).model_dump(exclude_none=True) == {**base, "es_vigente": True,
+                                                                   "estado_vigencia": "vigente"}
+    a = ModeloVigente(**base, es_vigente=False, estado_vigencia="actualizando", version_vigente="2")
+    assert a.version == "1" and a.version_vigente == "2"
+    for malo in ({"es_vigente": True, "estado_vigencia": "anterior"},
+                 {"es_vigente": False, "estado_vigencia": "vigente"},
+                 {"es_vigente": False, "estado_vigencia": "otro"}):
+        with pytest.raises(ValueError):
+            ModeloVigente(**base, **malo)

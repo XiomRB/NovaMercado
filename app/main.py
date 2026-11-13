@@ -134,8 +134,11 @@ def create_app(dependencias: Dependencias | None = None, iniciar_hilos: bool = T
 
     @app.get("/modelo")
     async def modelo(request: Request):
-        m = deps(request).gestor.actual()
-        return ModeloVigente(nombre=m.nombre, alias=m.alias, version=m.version).model_dump()
+        s = deps(request).gestor.servido()
+        m = s.modelo
+        return ModeloVigente(nombre=m.nombre, alias=m.alias, version=m.version, es_vigente=s.es_vigente,
+                             estado_vigencia=s.estado_vigencia, version_vigente=s.version_vigente,
+                             motivo=s.motivo).model_dump(exclude_none=True)
 
     @app.get("/health")
     async def health(request: Request):

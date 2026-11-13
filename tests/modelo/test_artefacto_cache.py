@@ -14,7 +14,8 @@ from app.modelo.proveedores import ModeloNoDisponible
 
 def meta(version, sha, **extra):
     return {"nombre": "novamercado-ventas", "alias": "vigente", "version": str(version), "run_id": f"r{version}",
-            "ruta_artefacto": "modelo/artifacts/modelo.joblib", "sha256_artefacto": sha, **extra}
+            "ruta_artefacto": "modelo/artifacts/modelo.joblib", "sha256_artefacto": sha,
+            "decision_id": int(version) * 10, "secuencia": int(version), **extra}
 
 
 # ------------------------------------------------------------------- artefacto
@@ -147,3 +148,26 @@ def test_archivo_si_coincide_recalcula_el_sha(tmp_path, archivo):
     assert c.archivo_si_coincide("1", sha) is not None
     (tmp_path / "cache" / "1" / "modelo.joblib").write_bytes(b"otro contenido")
     assert c.archivo_si_coincide("1", sha) is None
+
+
+# ------------------------------------------------- etapa 6: decisión y secuencia
+def test_entrada_para_exige_la_misma_decision_y_sha(tmp_path, archivo):
+    ruta, sha = archivo
+    c = CacheModelos(tmp_path / "c")
+    c.guardar(ruta, meta(3, sha))
+    assert c.entrada_para(30, "3", sha) is not None
+    assert c.entrada_para(31, "3", sha) is None                 # otra decisión, misma versión y SHA
+    assert c.entrada_para(30, "3", "0" * 64) is None
+    assert c.entrada_para(30, "4", sha) is None
+
+
+def test_mejor_por_secuencia_y_metadatos_sin_decision(tmp_path, archivo):
+    ruta, sha = archivo
+    c = CacheModelos(tmp_path / "c")
+    c.guardar(ruta, meta(1, sha, secuencia=9))
+    c.guardar(ruta, meta(2, sha, secuencia=4))
+    assert c.mejor_por_secuencia().metadatos["version"] == "1"     # por secuencia, no por número de versión
+    m = json.loads((tmp_path / "c" / "1" / "metadatos.json").read_text())
+    del m["decision_id"]                                            # entrada de la etapa 5: inválida
+    (tmp_path / "c" / "1" / "metadatos.json").write_text(json.dumps(m))
+    assert c.mejor_por_secuencia().metadatos["version"] == "2"

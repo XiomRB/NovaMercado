@@ -235,3 +235,55 @@ calidad_observaciones = Table(
 TABLAS_SOLO_INSERCION = ("ventas_historicas", "solicitudes_prediccion", "solicitud_familias", "predicciones",
                          "envios_observacion", "observaciones_historial", "calidad_observaciones")
 TABLAS_SIN_BORRADO = ("observaciones",)
+
+# ------------------------------------------- entrenamiento y promociones (etapa 6)
+# DECISIONES.md §15. ``bloqueo_entrenamiento`` es una tabla de UNA fila y mutable por
+# diseño (concesión de entrenamiento y contador de secuencia); un CHECK y la clave
+# primaria impiden una segunda fila y un trigger impide borrarla.
+# ``decisiones_promocion`` y ``resoluciones_promocion`` son de solo inserción:
+# PostgreSQL es la fuente de verdad del modelo vigente (E6-9).
+RESULTADOS_PROMOCION = ("confirmada", "anulada")
+
+bloqueo_entrenamiento = Table(
+    "bloqueo_entrenamiento", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=False),
+    Column("epoca", BigInteger, nullable=False, server_default="0"),
+    Column("titular", Text, nullable=True),
+    Column("adquirido_en", DateTime(timezone=True), nullable=True),
+    Column("latido", DateTime(timezone=True), nullable=True),      # NULL: concesión liberada
+    Column("ultima_secuencia", BigInteger, nullable=False, server_default="0"),
+    CheckConstraint("id = 1", name="fila_unica"),
+    CheckConstraint("epoca >= 0", name="epoca_no_negativa"),
+    CheckConstraint("ultima_secuencia >= 0", name="secuencia_no_negativa"),
+)
+
+decisiones_promocion = Table(
+    "decisiones_promocion", metadata,
+    Column("decision_id", BigInteger, Identity(always=True), primary_key=True),
+    Column("nombre_modelo", Text, nullable=False),
+    Column("version", Text, nullable=False),
+    Column("run_id", Text, nullable=False),
+    Column("ruta_artefacto", Text, nullable=False),
+    Column("sha256_artefacto", String(64), nullable=False),
+    Column("epoca", BigInteger, nullable=False),
+    Column("origen", Text, nullable=False),
+    Column("creada_en", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    CheckConstraint("sha256_artefacto ~ '^[0-9a-f]{64}$'", name="sha256_valido"),
+    CheckConstraint("epoca > 0", name="epoca_positiva"),
+)
+
+resoluciones_promocion = Table(
+    "resoluciones_promocion", metadata,
+    Column("decision_id", BigInteger, ForeignKey("decisiones_promocion.decision_id"), primary_key=True),
+    Column("resultado", Text, nullable=False),
+    Column("epoca", BigInteger, nullable=False),
+    Column("motivo", Text, nullable=False),
+    Column("secuencia", BigInteger, nullable=False),
+    Column("resuelta_en", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    CheckConstraint(_en("resultado", RESULTADOS_PROMOCION), name="resultado_valido"),
+    CheckConstraint("secuencia > 0", name="secuencia_positiva"),
+    UniqueConstraint("secuencia"),
+)
+
+# Constante propia: la migración 0001 importa TABLAS_SOLO_INSERCION y no debe cambiar.
+TABLAS_SOLO_INSERCION_PROMOCION = ("decisiones_promocion", "resoluciones_promocion")

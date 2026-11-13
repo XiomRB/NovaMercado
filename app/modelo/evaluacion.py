@@ -80,12 +80,19 @@ def cortes_evaluables(datos: DatosEntrenamiento, ev: ConfigEvaluacion, cfg: Conf
     return [c for c in cortes if c > minimo]
 
 
-def evaluar(datos: DatosEntrenamiento, ev: ConfigEvaluacion, cfg: ConfigEntrenamiento) -> ResultadoEvaluacion:
+MODELOS_CANDIDATO = (BASELINE, CANDIDATO)
+MODELOS_RESPALDO = (BASELINE,)
+
+
+def evaluar(datos: DatosEntrenamiento, ev: ConfigEvaluacion, cfg: ConfigEntrenamiento,
+            modelos: tuple[str, ...] = MODELOS_CANDIDATO) -> ResultadoEvaluacion:
+    """Backtest de ``modelos`` (por defecto, baseline y candidato; el respaldo de la
+    etapa 6 evalúa solo el baseline)."""
     cortes = cortes_evaluables(datos, ev, cfg)
     if len(cortes) < ev.minimo_cortes:
         return ResultadoEvaluacion(cortes, pd.DataFrame(), True, "")
     base = DatosBase(datos.ventas[CLAVE + ["ventas"]], datos.tiendas, datos.familias, datos.costos, datos.feriados)
-    r = ejecutar_backtest(base, cortes, ev.horizonte, modelos=(BASELINE, CANDIDATO), estrategias=(ESTRATEGIA,),
+    r = ejecutar_backtest(base, cortes, ev.horizonte, modelos=tuple(modelos), estrategias=(ESTRATEGIA,),
                           cuantil_directo=False, config=cfg, promociones=datos.promociones)
     p = r.predicciones
     venta, cant = p["venta_esperada"].to_numpy(float), p["cantidad_sugerida"].to_numpy()
@@ -122,6 +129,27 @@ def evaluar_criterio(res: ResultadoEvaluacion, ev: ConfigEvaluacion) -> Resultad
     else:
         motivo = (f"costo {total_c:,.0f} vs {total_b:,.0f} del baseline ({resumen['mejora_pct']:.1f} % menos); "
                   f"gana {ganados}/{n} cortes; peor corte {100 * peor:+.1f} %")
+    return ResultadoCriterio(not fallas, c, motivo, resumen)
+
+
+def evaluar_criterio_respaldo(res: ResultadoEvaluacion, ev: ConfigEvaluacion,
+                              tabla_candidato: pd.DataFrame) -> ResultadoCriterio:
+    """Criterio del respaldo baseline (etapa 6, §6): T2, D1 y R1 (sus métricas coinciden
+    con las filas del baseline en el backtest del candidato: mismos datos y misma
+    función). C1–C3 no aplican: compararían al baseline consigo mismo."""
+    n = len(res.cortes)
+    c = {"T2": res.salidas_validas, "D1": n >= ev.minimo_cortes}
+    if not c["D1"]:
+        return ResultadoCriterio(False, c, f"D1: solo {n} cortes evaluables (mínimo {ev.minimo_cortes})",
+                                 {"n_cortes": n})
+    filas = tabla_candidato[tabla_candidato["modelo"] == BASELINE]
+    difs = comparar_metricas(filas, res.por_corte)
+    c["R1"] = not difs
+    total = float(res.por_corte["costo_total"].sum())
+    resumen = {"n_cortes": n, "costo_total_baseline": total}
+    fallas = [k for k, v in c.items() if not v]
+    motivo = ("baseline de respaldo: " + (f"costo {total:,.0f} en {n} cortes" if not fallas else
+                                          "no cumple " + ", ".join(fallas) + (f" ({difs[0]})" if difs else "")))
     return ResultadoCriterio(not fallas, c, motivo, resumen)
 
 

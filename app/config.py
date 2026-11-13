@@ -14,14 +14,42 @@ def url_base_datos(variable: str = "DATABASE_URL") -> str:
     """URL SQLAlchemy de la base del producto, p. ej.
     ``postgresql+psycopg2://usuario:clave@host:5432/novamercado``.
 
+    * Si ``DATABASE_URL`` está definida, se usa tal cual (equipo de desarrollo).
+    * Si no, se construye **por partes** (contenedores, etapa 6) desde
+      ``POSTGRES_USER``, ``POSTGRES_PASSWORD``, ``POSTGRES_DB``, ``DB_HOST`` y
+      ``DB_PORT`` con ``URL.create``, que escapa los caracteres especiales de la
+      clave. Así el ``DATABASE_URL`` del ``.env`` (``localhost:5433``) nunca se
+      filtra a los contenedores.
+
     No hay valor por defecto: las credenciales nunca se escriben en el código.
     """
     url = os.environ.get(variable, "").strip()
+    if not url and variable == "DATABASE_URL":
+        url = _url_por_partes()
     if not url:
         raise ConfiguracionInvalida(f"falta la variable de entorno {variable}")
     if not url.startswith("postgresql"):
         raise ConfiguracionInvalida(f"{variable} debe ser una URL de PostgreSQL")
     return url
+
+
+PARTES_URL = ("POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB", "DB_HOST")
+
+
+def _url_por_partes() -> str:
+    valores = {v: os.environ.get(v, "") for v in PARTES_URL}
+    if not any(valores.values()):
+        return ""
+    faltan = [v for v, x in valores.items() if not x.strip()]
+    if faltan:
+        raise ConfiguracionInvalida(f"sin DATABASE_URL, faltan las variables {faltan}")
+    puerto = os.environ.get("DB_PORT", "5432").strip() or "5432"
+    if not puerto.isdigit():
+        raise ConfiguracionInvalida("DB_PORT debe ser un número de puerto")
+    from sqlalchemy.engine import URL
+    return URL.create("postgresql+psycopg2", username=valores["POSTGRES_USER"],
+                      password=valores["POSTGRES_PASSWORD"], host=valores["DB_HOST"].strip(),
+                      port=int(puerto), database=valores["POSTGRES_DB"].strip()).render_as_string(hide_password=False)
 
 
 def segundos(variable: str, por_defecto: float) -> float:

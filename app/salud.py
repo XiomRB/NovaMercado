@@ -59,6 +59,8 @@ class MonitorSalud:
     limite: float = 3.0
     # False si el origen responde pero no ofrece una versión utilizable (M9)
     modelo_actualizado: Callable[[], bool] = lambda: True
+    # Etapa 6: motivos del gestor (modelo anterior E-ANT, alias desincronizado)
+    motivos_modelo: Callable[[], list] = lambda: []
     _resultados: dict[str, str] = field(default_factory=dict)
     _en_curso: dict[str, Future] = field(default_factory=dict)
 
@@ -109,14 +111,20 @@ class MonitorSalud:
             else:
                 componentes[nombre] = FALLA if nombre in self.requeridos else NO_CONFIGURADO
         problemas = []
+        try:
+            extra = list(self.motivos_modelo()) if modelo else []
+        except Exception:  # noqa: BLE001
+            extra = []
         for nombre in self.requeridos:
             estado = componentes.get(nombre, FALLA)
             if estado == PENDIENTE:
                 problemas.append(f"{nombre}: verificación en curso")
             elif estado == DESACTUALIZADO:
-                problemas.append("no se pudo actualizar el modelo vigente")
+                problemas.extend(extra or ["no se pudo actualizar el modelo vigente"])
+                extra = []
             elif estado != OK:
                 problemas.append(MOTIVOS.get(nombre, f"{nombre} no disponible"))
+        problemas.extend(extra)
         if problemas:
             return Diagnostico("degradado", "; ".join(problemas), componentes, modelo)
         return Diagnostico("ok", None, componentes, modelo)
