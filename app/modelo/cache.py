@@ -108,6 +108,10 @@ class CacheModelos:
             raise ArtefactoInvalido("metadatos de la caché incompletos")
         if str(metadatos["version"]) != version:
             raise ArtefactoInvalido("la versión de los metadatos no corresponde a la carpeta")
+        for campo in ("decision_id", "secuencia"):          # confirmada en PostgreSQL (etapa 6)
+            v = metadatos[campo]
+            if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+                raise ArtefactoInvalido(f"la entrada de la caché no tiene un {campo} confirmado válido")
         artefacto = validar_archivo(carpeta / NOMBRE_ARCHIVO, metadatos["sha256_artefacto"])
         return EntradaValida(artefacto, metadatos)
 

@@ -119,7 +119,11 @@ def test_modelo_vigente_estados_de_vigencia_coherentes():
                                                                    "estado_vigencia": "vigente"}
     a = ModeloVigente(**base, es_vigente=False, estado_vigencia="actualizando", version_vigente="2")
     assert a.version == "1" and a.version_vigente == "2"
+    sv = ModeloVigente(**base, es_vigente=False, estado_vigencia="sin_verificar")
+    assert sv.model_dump(exclude_none=True) == {**base, "es_vigente": False, "estado_vigencia": "sin_verificar"}
     for malo in ({"es_vigente": True, "estado_vigencia": "anterior"},
+                 {"es_vigente": True, "estado_vigencia": "sin_verificar"},
+                 {"es_vigente": False, "estado_vigencia": "sin_verificar", "version_vigente": "2"},
                  {"es_vigente": False, "estado_vigencia": "vigente"},
                  {"es_vigente": False, "estado_vigencia": "otro"}):
         with pytest.raises(ValueError):

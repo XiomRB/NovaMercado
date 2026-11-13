@@ -930,6 +930,9 @@ de MLflow) y **T3** se registra por separado de T4b.
   concesión vigente. S2: el proveedor solo **activa** el vigente confirmado
   (SHA de PostgreSQL antes de deserializar, T3, segunda lectura); la única otra
   versión que puede seguir sirviéndose es la ya activa en estado `anterior`.
+  Excepción explícita (revisión del PR #6): con PostgreSQL inaccesible **desde el
+  arranque**, también puede servirse la entrada de la caché confirmada de mayor
+  secuencia, en estado `sin_verificar`, siempre marcada.
   S3: una versión de una época antigua no puede volverse vigente después de una
   época nueva. **No** se garantiza la coherencia permanente de MLflow (no admite
   *fencing tokens*): una escritura tardía puede desfasar tags o alias hasta la
@@ -948,13 +951,28 @@ de MLflow) y **T3** se registra por separado de T4b.
   descarga: misma versión y SHA con otra decisión, solo con el SHA del modelo
   cargado, sus validaciones registradas y la segunda lectura confirmada.
 * Estados: `vigente`, `actualizando` (no degrada), `anterior` (E-ANT: se observó
-  B, no se pudo activar; se sirve A marcada y `/health` degrada). Campos
+  B, no se pudo activar; se sirve A marcada y `/health` degrada) y `sin_verificar`
+  (ver abajo). Campos
   agregados al contrato: `modelo_es_vigente`, `es_vigente`, `estado_vigencia`,
   `version_vigente`, `motivo`. Con la base inaccesible durante `actualizando` o
   `anterior` se conservan el estado y la versión vigente observada.
-* Al arrancar con PostgreSQL inaccesible, el modelo de la caché se sirve en estado
-  `anterior` con `version_vigente` nulo: no hubo ninguna consulta exitosa que
-  permita afirmar que es el vigente (precisión de la implementación).
+* **`sin_verificar`** (cuarto estado, autorizado en la revisión del PR #6): al
+  arrancar sin modelo y con PostgreSQL inaccesible, se sirve la entrada de la caché
+  de mayor secuencia. `anterior` no correspondía (no se observó ningún vigente
+  nuevo) ni `vigente` (no hubo ninguna consulta exitosa).
+  * Solo entradas confirmadas en PostgreSQL en su momento: `decision_id` y
+    `secuencia` enteros positivos y SHA-256 verificado antes de deserializar, más
+    T3. Una entrada sin esos datos o con otro SHA nunca se sirve.
+  * `version`/`version_modelo` = la versión que responde; `es_vigente` y
+    `modelo_es_vigente` = `false`; `version_vigente` ausente (desconocido).
+  * `/health`: 200 y `degradado`, con el componente `modelo` en `sin_verificar` y
+    los dos motivos (base no disponible y vigencia sin verificar).
+  * Primera consulta exitosa: mismo `(decision_id, secuencia)` y mismo SHA →
+    `vigente` sin descargar; otro vigente → `actualizando` y el flujo normal
+    (activación, adopción o `anterior`); sin vigente → se retira el modelo (503);
+    la base sigue sin responder → se mantiene `sin_verificar`.
+  * Solo se entra desde el arranque sin modelo: si la base deja de responder
+    **después** de una consulta exitosa se conserva el último estado conocido.
 
 ### Respaldo baseline (E6-4)
 

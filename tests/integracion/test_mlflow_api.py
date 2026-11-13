@@ -161,21 +161,80 @@ def test_reinicio_sin_mlflow_usa_la_entrada_del_vigente(bd, servidor_mlflow_prop
     d.monitor.detener()
 
 
-def test_base_inaccesible_al_arrancar_usa_la_cache_de_mayor_secuencia(bd, servidor_mlflow_propio, nombre_modelo,
-                                                                     tmp_path):
+def test_base_inaccesible_al_arrancar_sirve_la_cache_sin_verificar(bd, servidor_mlflow_propio, nombre_modelo,
+                                                                   tmp_path):
+    """PostgreSQL no respondió ninguna consulta desde el arranque: se sirve la entrada
+    confirmada de mayor secuencia en estado sin_verificar (revisión del PR #6)."""
     srv, cache = servidor_mlflow_propio, tmp_path / "cache"
     _dos_versiones_en_cache(bd, srv, nombre_modelo, cache)
     srv.detener()
-    d = armar(bd, srv.uri, nombre_modelo, cache, lector=BaseCaida())  # PostgreSQL y MLflow caídos
+    caida = BaseCaida()
+    d = armar(bd, srv.uri, nombre_modelo, cache, lector=caida)        # PostgreSQL y MLflow caídos
+    d.monitor.verificaciones["base_datos"] = lambda: False             # la API tampoco alcanza la base
+    d.monitor.ejecutar_ciclo()
+    with cliente_http(d) as c:
+        m = c.get("/modelo").json()
+        assert m == {"nombre": nombre_modelo, "alias": "vigente", "version": "2", "es_vigente": False,
+                     "estado_vigencia": "sin_verificar", "motivo": m["motivo"]}
+        assert "version_vigente" not in m and "no se pudo verificar el vigente actual" in m["motivo"]
+        h = c.get("/health")
+        assert h.status_code == 200 and h.json()["estado"] == "degradado"
+        assert h.json()["componentes"]["modelo"] == "sin_verificar"
+        assert "base de datos no disponible" in h.json()["motivo"]
+        assert "no se pudo verificar la vigencia del modelo" in h.json()["motivo"]
+        assert c.get("/health").json()["componentes"]["base_datos"] == "falla"
+    # la base vuelve: misma decisión que la caché → vigente, sin descargar (MLflow sigue caído)
+    d.gestor.proveedor._lector = None
+    d.monitor.verificaciones["base_datos"] = d.persistencia.disponible
+    d.gestor.refrescar()
+    d.monitor.ejecutar_ciclo()
     s = d.gestor.servido()
-    assert s.modelo.version == "2" and s.estado_vigencia == "anterior" and s.version_vigente is None
+    assert (s.modelo.version, s.estado_vigencia, s.es_vigente, s.version_vigente) == ("2", "vigente", True, "2")
     with cliente_http(d) as c:
         r = c.post("/v1/prediccion", json=PRED)
-        assert r.status_code == 200 and r.json()["version_modelo"] == "2" and not r.json()["modelo_es_vigente"]
+        assert r.status_code == 200 and r.json()["version_modelo"] == "2" and r.json()["modelo_es_vigente"]
+        assert c.get("/health").json()["componentes"]["modelo"] == "ok"
     d.monitor.detener()
-    (cache / "2" / "metadatos.json").write_text("{}")                 # la de mayor secuencia se corrompe
+
+
+def test_sin_verificar_responde_predicciones_marcadas(bd, servidor_mlflow_propio, nombre_modelo, tmp_path):
+    """Las predicciones necesitan la base (se registran): con la base solo inaccesible para
+    el proveedor, responden con la versión de la caché marcada como no vigente."""
+    srv, cache = servidor_mlflow_propio, tmp_path / "cache"
+    _dos_versiones_en_cache(bd, srv, nombre_modelo, cache)
+    srv.detener()
     d = armar(bd, srv.uri, nombre_modelo, cache, lector=BaseCaida())
-    assert d.gestor.servido().modelo.version == "1"
+    with cliente_http(d) as c:
+        r = c.post("/v1/prediccion", json=PRED)
+        assert r.status_code == 200 and r.json()["version_modelo"] == "2" and r.json()["modelo_es_vigente"] is False
+    (cache / "2" / "metadatos.json").write_text("{}")                 # la de mayor secuencia se corrompe
+    d2 = armar(bd, srv.uri, nombre_modelo, cache, lector=BaseCaida())
+    assert d2.gestor.servido().modelo.version == "1" and d2.gestor.servido().estado_vigencia == "sin_verificar"
+    d.monitor.detener()
+    d2.monitor.detener()
+
+
+@pytest.mark.parametrize("al_volver", ["otro_vigente", "sin_vigente"])
+def test_sin_verificar_transiciones_al_volver_la_base(bd, servidor_mlflow, nombre_modelo, tmp_path, al_volver):
+    uri, cache = servidor_mlflow.uri, tmp_path / "cache"
+    from tests.integracion.apoyo_mlflow import CONFIG
+    registrar(bd, uri, nombre_modelo)
+    armar(bd, uri, nombre_modelo, cache).monitor.detener()            # cachea v1 confirmada
+    d = armar(bd, uri, nombre_modelo, cache, lector=BaseCaida())
+    assert d.gestor.servido().estado_vigencia == "sin_verificar"
+    if al_volver == "otro_vigente":
+        otra = ConfigEntrenamiento(**{**CONFIG.__dict__, "params_hgb": dict(max_iter=15)})
+        registrar(bd, uri, nombre_modelo, promover="siempre", config=otra)          # v2 confirmada
+        d.gestor.proveedor._lector = None
+        assert d.gestor.refrescar() is True
+        s = d.gestor.servido()
+        assert (s.modelo.version, s.estado_vigencia, s.version_vigente) == ("2", "vigente", "2")
+    else:
+        d.gestor.proveedor._lector = lambda: None                    # la base responde: no hay vigente
+        d.gestor.refrescar()
+        assert not d.gestor.cargado()
+        with cliente_http(d) as c:
+            assert c.post("/v1/prediccion", json=PRED).status_code == 503
     d.monitor.detener()
 
 
@@ -226,6 +285,7 @@ def test_manipulacion_coherente_sin_base_ni_mlflow_se_corrige_al_volver(bd, serv
     srv.detener()
     d = armar(bd, srv.uri, nombre_modelo, cache, lector=BaseCaida())
     assert d.gestor.actual().version == "2"                          # limitación documentada: se acepta
+    assert d.gestor.servido().estado_vigencia == "sin_verificar"
     # con PostgreSQL disponible, la entrada manipulada NO coincide con el SHA de la decisión
     d.gestor.proveedor._lector = None
     d.gestor.refrescar()

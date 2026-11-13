@@ -6,7 +6,14 @@ from types import SimpleNamespace
 import pytest
 
 from app.db.promociones import Vigente
-from app.modelo.gestor import ACTUALIZANDO, ANTERIOR, VIGENTE, GestorVigente
+from app.modelo.gestor import (
+    ACTUALIZANDO,
+    ANTERIOR,
+    MOTIVO_SIN_VERIFICAR,
+    SIN_VERIFICAR,
+    VIGENTE,
+    GestorVigente,
+)
 from app.modelo.proveedor_mlflow import ConsultaIndeterminada, Obtenido
 from app.modelo.proveedores import ModeloCargado, ModeloNoDisponible, OrigenNoDisponible, VersionNoUtilizable
 
@@ -199,13 +206,96 @@ def test_base_inaccesible_durante_actualizando_no_activa_b(p):
     assert g.refrescar() is True and g.servido().modelo.version == "2" and g.servido().es_vigente
 
 
-def test_base_inaccesible_al_arrancar_usa_la_cache_marcada_como_anterior(p):
+# --------------------------------------------- sin_verificar (revisión del PR #6)
+def meta_cache(decision=1, version="1", sha="a" * 64, secuencia=None):
+    return {"decision_id": decision, "secuencia": secuencia or decision, "version": version, "run_id": f"run{version}",
+            "ruta_artefacto": "modelo/artifacts/modelo.joblib", "sha256_artefacto": sha}
+
+
+def arrancar_sin_base(p, version="1", decision=1, sha="a" * 64):
     p.lecturas = [CAIDA]
-    p.respaldo = (ModeloCargado(object(), "m", "vigente", "4"), {"sha256_artefacto": "a" * 64})
+    p.respaldo = (ModeloCargado(SimpleNamespace(), "m", "vigente", version), meta_cache(decision, version, sha))
     g = GestorVigente(p)
     assert g.refrescar() is True
+    return g
+
+
+def test_sin_verificar_al_arrancar_sin_base(p):
+    g = arrancar_sin_base(p, version="4", decision=7)
     s = g.servido()
-    assert (s.modelo.version, s.estado_vigencia, s.es_vigente, s.version_vigente) == ("4", ANTERIOR, False, None)
+    assert (s.modelo.version, s.estado_vigencia, s.es_vigente, s.version_vigente) == ("4", SIN_VERIFICAR, False, None)
+    assert g.vigencia() == SIN_VERIFICAR and not g.actualizado()
+    assert g.motivos_degradacion() == [MOTIVO_SIN_VERIFICAR]
+    assert "decisión 7" in s.motivo and "no se pudo verificar el vigente actual" in s.motivo
+    assert g._e.decision.clave == (7, 7)                        # procedencia de la caché conservada
+
+
+def test_sin_verificar_misma_decision_pasa_a_vigente_sin_descargar(p):
+    g = arrancar_sin_base(p)
+    p.lecturas = [vig(1, "1")]
+    assert g.refrescar() is False and p.obtenidos == []         # sin descarga
+    s = g.servido()
+    assert (s.estado_vigencia, s.es_vigente, s.version_vigente) == (VIGENTE, True, "1")
+    assert g.motivos_degradacion() == []
+
+
+def test_sin_verificar_misma_decision_con_otro_sha_no_se_da_por_vigente(p):
+    g = arrancar_sin_base(p, sha="f" * 64)
+    p.lecturas = [vig(1, "1", "a" * 64)]
+    assert g.refrescar() is True and p.obtenidos == [(1, 1)]     # se obtiene y valida el artefacto real
+
+
+def test_sin_verificar_otro_vigente_sigue_el_flujo_normal(p):
+    g = arrancar_sin_base(p)
+    vistos = []
+    p.al_obtener = lambda: vistos.append(g.servido().estado_vigencia)
+    p.lecturas = [vig(2, "2", "b" * 64)]
+    assert g.refrescar() is True
+    assert vistos == [ACTUALIZANDO] and g.servido().modelo.version == "2" and g.servido().es_vigente
+    g2 = arrancar_sin_base(ProveedorFalso())                      # y si no se puede obtener: anterior
+    g2.proveedor.lecturas = [vig(2, "2", "b" * 64)]
+    g2.proveedor.fallo_obtener = OrigenNoDisponible("MLflow no disponible")
+    g2.refrescar()
+    s = g2.servido()
+    assert (s.modelo.version, s.estado_vigencia, s.version_vigente) == ("1", ANTERIOR, "2")
+
+
+def test_sin_verificar_y_postgres_sin_vigente_retira_el_modelo(p):
+    g = arrancar_sin_base(p)
+    p.lecturas = [None]
+    g.refrescar()
+    assert not g.cargado()
+
+
+def test_sin_verificar_con_la_base_todavia_caida_se_mantiene(p):
+    g = arrancar_sin_base(p)
+    for _ in range(3):
+        g.refrescar()
+    assert g.servido().estado_vigencia == SIN_VERIFICAR and g.servido().version_vigente is None
+
+
+@pytest.mark.parametrize("estado_previo", [VIGENTE, ACTUALIZANDO, ANTERIOR])
+def test_base_caida_tras_una_consulta_exitosa_nunca_pasa_a_sin_verificar(p, estado_previo):
+    g = cargar(p, vig(1, "1"))
+    if estado_previo == ACTUALIZANDO:
+        p.lecturas = [vig(2, "2", "b" * 64), CAIDA]
+        g.refrescar()
+    elif estado_previo == ANTERIOR:
+        p.lecturas = [vig(2, "2", "b" * 64)]
+        p.fallo_obtener = OrigenNoDisponible("MLflow no disponible")
+        g.refrescar()
+    assert g.servido().estado_vigencia == estado_previo
+    p.lecturas = [CAIDA]
+    for _ in range(2):
+        g.refrescar()
+    assert g.servido().estado_vigencia == estado_previo
+
+
+def test_sin_cache_valida_no_hay_modelo(p):
+    p.lecturas = [CAIDA]
+    p.respaldo = None                                              # nada confirmado y verificado
+    g = GestorVigente(p)
+    assert g.refrescar() is False and not g.cargado()
 
 
 # ------------------------------------------------------ adopción sin descarga (§7.3.4)

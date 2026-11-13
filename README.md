@@ -153,7 +153,9 @@ python -m app.modelo.entrenar_mlflow
   sin reiniciar en ≤ 15 s más la descarga. Con MLflow caído sigue prediciendo con
   el modelo cargado (o, al arrancar, con la entrada de la caché del vigente) y
   `/health` responde `degradado`. Si una promoción confirmada no se puede
-  descargar, sigue con el modelo anterior **marcado como tal** (E-ANT).
+  descargar, sigue con el modelo anterior **marcado como tal** (E-ANT). Si al
+  arrancar PostgreSQL no responde, sirve la última entrada confirmada de la caché
+  en estado `sin_verificar` hasta poder consultarlo.
 * Desarrollo sin MLflow: `MODELO_ORIGEN=archivo` y
   `python -m app.modelo.entrenar_local` (artefacto local de la etapa 4).
 
@@ -163,7 +165,7 @@ python -m app.modelo.entrenar_mlflow
 |---|---|
 | `POST /v1/prediccion` | limpieza, advertencias, predicción y registro en PostgreSQL; `version_modelo` es la versión que produjo la respuesta y `modelo_es_vigente` (agregado, etapa 6) indica si coincide con el vigente observado |
 | `POST /v1/observaciones` | registro idempotente (`registros_guardados` = nuevos + modificados) |
-| `GET /modelo` | modelo que usa el servicio: `nombre`, `alias`, `version`; campos agregados (etapa 6): `es_vigente`, `estado_vigencia` (`vigente`, `actualizando`, `anterior`), `version_vigente` (vigente observado) y `motivo` |
+| `GET /modelo` | modelo que usa el servicio: `nombre`, `alias`, `version`; campos agregados (etapa 6): `es_vigente`, `estado_vigencia` (`vigente`, `actualizando`, `anterior`, `sin_verificar`), `version_vigente` (vigente observado; ausente en `sin_verificar`) y `motivo` |
 | `GET /health` | `ok` / `degradado` + `motivo` (200); 503 sin modelo |
 | `POST /admin/reentrenar`, `GET /admin/reentrenar/{id}` | 503 / 404 hasta la etapa 7 (Airflow) |
 

@@ -126,7 +126,8 @@ class GestorModelo:
 
 
 # ============================================================ etapa 6: GestorVigente
-VIGENTE, ACTUALIZANDO, ANTERIOR = "vigente", "actualizando", "anterior"
+VIGENTE, ACTUALIZANDO, ANTERIOR, SIN_VERIFICAR = "vigente", "actualizando", "anterior", "sin_verificar"
+MOTIVO_SIN_VERIFICAR = "no se pudo verificar la vigencia del modelo (PostgreSQL no disponible desde el arranque)"
 INTENTOS_POR_CICLO = 3
 REFRESCOS_ALIAS_DESINCRONIZADO = 2
 
@@ -165,6 +166,11 @@ class GestorVigente:
       (o pendiente porque la base no responde). No degrada ``/health`` por sí mismo.
     * ``anterior`` (E-ANT): se observó B, se intentó activarlo y no se pudo; se conserva el
       modelo ya cargado (vigente confirmado en su momento). Degrada ``/health``.
+    * ``sin_verificar`` (revisión del PR #6): PostgreSQL no respondió **ninguna** consulta
+      desde el arranque y se sirve una entrada de la caché confirmada en su momento
+      (``decision_id``, ``secuencia`` y SHA verificados). ``version_vigente`` se desconoce.
+      Degrada ``/health``. Solo se entra desde el arranque sin modelo: si la base deja
+      de responder después de una consulta exitosa se conserva el último estado conocido.
 
     ``version``/``version_modelo`` informan siempre el modelo que realmente predice;
     ``version_vigente``, el vigente observado.
@@ -199,13 +205,18 @@ class GestorVigente:
         return self._e.modelo is not None
 
     def actualizado(self) -> bool:
-        return self._e.vigencia != ANTERIOR
+        return self._e.vigencia not in (ANTERIOR, SIN_VERIFICAR)
+
+    def vigencia(self) -> str | None:
+        return self._e.vigencia if self._e.modelo is not None else None
 
     def motivos_degradacion(self) -> list[str]:
         e = self._e
         motivos = []
         if e.modelo is not None and e.vigencia == ANTERIOR:
             motivos.append(e.motivo or "se sirve un modelo anterior")
+        if e.modelo is not None and e.vigencia == SIN_VERIFICAR:
+            motivos.append(MOTIVO_SIN_VERIFICAR)
         if self.alias_desincronizado >= REFRESCOS_ALIAS_DESINCRONIZADO:
             motivos.append("el alias de MLflow no coincide con la promoción confirmada")
         return motivos
@@ -261,7 +272,12 @@ class GestorVigente:
             return False
         self._revisar_alias(v)
         e = self._e
-        if e.modelo is not None and e.decision is not None and e.decision.clave == v.clave:
+        # misma decisión (decision_id, secuencia) y mismo SHA verificado: es el vigente. Desde
+        # sin_verificar, es la primera consulta exitosa que confirma la entrada de la caché.
+        if (e.modelo is not None and e.decision is not None and e.decision.clave == v.clave
+                and e.sha == v.sha256_artefacto):
+            if e.vigencia == SIN_VERIFICAR:
+                logger.info("PostgreSQL confirma que la versión %s de la caché es el vigente", e.modelo.version)
             self._poner(vigencia=VIGENTE, observado=v, motivo=None)
             return False
 
@@ -317,8 +333,11 @@ class GestorVigente:
         return self._anterior(v, f"la revalidación no confirmó el vigente tras {self.intentos} intentos")
 
     def _sin_base(self, motivo: str) -> bool:
-        """PostgreSQL inaccesible: se conserva el modelo, el estado y el vigente observado;
-        sin modelo, la caché de mayor secuencia (§7.2)."""
+        """PostgreSQL inaccesible: con un modelo cargado se conservan el modelo, el estado y
+        el vigente observado (nunca se pasa a ``sin_verificar``). Sin modelo, la entrada de
+        la caché de mayor secuencia (§7.2), en estado ``sin_verificar``: solo entradas
+        confirmadas en PostgreSQL en su momento, con ``decision_id``, ``secuencia`` y SHA
+        verificados (``CacheModelos.validar``)."""
         self.ultimo_error = motivo
         if self._e.modelo is not None:
             return False
@@ -327,9 +346,13 @@ class GestorVigente:
         except ModeloNoDisponible as exc:
             self.ultimo_error = f"{motivo}; {exc}"
             return False
-        texto = (f"PostgreSQL no disponible: se sirve la versión {modelo.version} de la caché "
-                 "(vigente confirmada en su momento); no se pudo consultar el vigente actual")
-        self._e = _Estado(modelo, None, meta["sha256_artefacto"], True, ANTERIOR, None, texto)
+        from app.db.promociones import Vigente
+        decision = Vigente(int(meta["decision_id"]), int(meta["secuencia"]), str(meta["version"]),
+                           str(meta["run_id"]), str(meta["ruta_artefacto"]), str(meta["sha256_artefacto"]), 0)
+        texto = (f"PostgreSQL no disponible desde el arranque: se sirve la versión {modelo.version} de la caché "
+                 f"(decisión {decision.decision_id}, secuencia {decision.secuencia}); no se pudo verificar el "
+                 "vigente actual")
+        self._e = _Estado(modelo, decision, decision.sha256_artefacto, True, SIN_VERIFICAR, None, texto)
         logger.warning(texto)
         return True
 

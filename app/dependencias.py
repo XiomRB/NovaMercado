@@ -60,6 +60,7 @@ def construir_monitor(persistencia: Persistencia, gestor: GestorModelo, orquesta
         modelo_cargado=gestor.cargado,
         modelo_actualizado=getattr(gestor, "actualizado", lambda: True),
         motivos_modelo=getattr(gestor, "motivos_degradacion", lambda: []),
+        vigencia_modelo=getattr(gestor, "vigencia", lambda: None),
         intervalo=intervalo if intervalo is not None else segundos("SALUD_INTERVALO", 10),
         limite=limite if limite is not None else segundos("SALUD_LIMITE", 3),
     )

@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 OK, FALLA, NO_CONFIGURADO, PENDIENTE = "ok", "falla", "no_configurado", "pendiente"
 DESACTUALIZADO = "desactualizado"
+SIN_VERIFICAR = "sin_verificar"
 
 MOTIVOS = {
     "base_datos": "base de datos no disponible",
@@ -61,6 +62,8 @@ class MonitorSalud:
     modelo_actualizado: Callable[[], bool] = lambda: True
     # Etapa 6: motivos del gestor (modelo anterior E-ANT, alias desincronizado)
     motivos_modelo: Callable[[], list] = lambda: []
+    # Etapa 6: estado de vigencia del modelo servido (None sin modelo)
+    vigencia_modelo: Callable[[], str | None] = lambda: None
     _resultados: dict[str, str] = field(default_factory=dict)
     _en_curso: dict[str, Future] = field(default_factory=dict)
 
@@ -103,7 +106,14 @@ class MonitorSalud:
         modelo = bool(self._seguro(self.modelo_cargado))
         estado_modelo = FALLA
         if modelo:
-            estado_modelo = OK if self._seguro(self.modelo_actualizado) else DESACTUALIZADO
+            try:
+                vigencia = self.vigencia_modelo()
+            except Exception:  # noqa: BLE001
+                vigencia = None
+            if vigencia == SIN_VERIFICAR:
+                estado_modelo = SIN_VERIFICAR
+            else:
+                estado_modelo = OK if self._seguro(self.modelo_actualizado) else DESACTUALIZADO
         componentes = {"api": OK, "modelo": estado_modelo}
         for nombre in ("base_datos", "mlflow", "airflow"):
             if nombre in self.verificaciones:
@@ -119,7 +129,7 @@ class MonitorSalud:
             estado = componentes.get(nombre, FALLA)
             if estado == PENDIENTE:
                 problemas.append(f"{nombre}: verificación en curso")
-            elif estado == DESACTUALIZADO:
+            elif estado in (DESACTUALIZADO, SIN_VERIFICAR):
                 problemas.extend(extra or ["no se pudo actualizar el modelo vigente"])
                 extra = []
             elif estado != OK:

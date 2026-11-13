@@ -166,3 +166,32 @@ def test_modelo_origen(monkeypatch):
     monkeypatch.setenv("MODELO_ORIGEN", "s3")
     with pytest.raises(ConfiguracionInvalida):
         modelo_origen()
+
+
+@pytest.mark.parametrize("dano", ["sin_decision", "decision_cero", "secuencia_texto", "sha_metadatos", "artefacto"])
+def test_cache_no_confirmada_o_con_sha_incorrecto_nunca_se_sirve(entorno, dano):
+    """``sin_verificar`` solo puede usar entradas confirmadas en PostgreSQL en su momento,
+    con decision_id, secuencia y SHA verificados."""
+    import json
+    entorno.cliente.version = mv(entorno.sha)
+    entorno.prov.guardar_en_cache(entorno.prov.obtener(vig(entorno.sha)))
+    meta = entorno.cache.dir / "1" / "metadatos.json"
+    m = json.loads(meta.read_text())
+    if dano == "sin_decision":
+        del m["decision_id"]
+    elif dano == "decision_cero":
+        m["decision_id"] = 0
+    elif dano == "secuencia_texto":
+        m["secuencia"] = "1"
+    elif dano == "sha_metadatos":
+        m["sha256_artefacto"] = "0" * 64
+    meta.write_text(json.dumps(m))
+    if dano == "artefacto":
+        f = entorno.cache.dir / "1" / "modelo.joblib"
+        f.write_bytes(f.read_bytes() + b"x")
+    with pytest.raises(ModeloNoDisponible):
+        entorno.prov.respaldo_sin_base()
+    from app.modelo.gestor import GestorVigente
+    entorno.lector.valor = lambda: (_ for _ in ()).throw(ConnectionError("PostgreSQL caído"))
+    g = GestorVigente(entorno.prov)
+    assert g.refrescar() is False and not g.cargado()            # nunca se sirve

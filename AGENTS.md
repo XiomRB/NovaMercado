@@ -193,6 +193,9 @@ tests/fixtures/ catálogo y ejemplos sintéticos: las pruebas nunca leen raw/
   `ciclo_entrenamiento.ejecutar_entrenamiento` la adquiere. Todo entrenamiento de
   producción pasa por ahí (manual, arranque y, en la etapa 7, el DAG). El trabajo
   pesado corre en el proceso hijo; el hijo nunca promueve.
+* Estados de vigencia: `vigente`, `actualizando`, `anterior` (E-ANT) y `sin_verificar`
+  (solo al arrancar sin modelo y con PostgreSQL inaccesible; nunca después de una
+  consulta exitosa). La caché solo sirve entradas confirmadas (decision_id, secuencia, SHA).
 * Los comandos verifican la procedencia (`procedencia.py`) **antes** de importar el
   resto del proyecto; no agregar opciones para omitirla.
 * Dependencias: cambiar versiones en `requirements/*.txt` y regenerar el lock con

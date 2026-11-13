@@ -180,3 +180,17 @@ def test_modelo_desactualizado_degrada_sin_503():
     estado["actualizado"] = True
     assert m.diagnostico().estado == "ok"
     m.detener()
+
+
+def test_modelo_sin_verificar_degrada_con_ambos_motivos_y_responde_200():
+    m = MonitorSalud(verificaciones={"base_datos": lambda: False, "mlflow": lambda: True},
+                     requeridos=("api", "base_datos", "modelo", "mlflow"), modelo_cargado=lambda: True,
+                     modelo_actualizado=lambda: False, vigencia_modelo=lambda: "sin_verificar",
+                     motivos_modelo=lambda: ["no se pudo verificar la vigencia del modelo (PostgreSQL no disponible "
+                                             "desde el arranque)"])
+    m.ejecutar_ciclo()
+    d = m.diagnostico()
+    assert d.codigo_http == 200 and d.estado == "degradado"
+    assert d.componentes["modelo"] == "sin_verificar" and d.componentes["base_datos"] == "falla"
+    assert "base de datos no disponible" in d.motivo and "no se pudo verificar la vigencia" in d.motivo
+    m.detener()

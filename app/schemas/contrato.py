@@ -128,7 +128,7 @@ class EstadoReentrenamiento(_Estricto):
         return self.model_dump()
 
 
-ESTADOS_VIGENCIA = ("vigente", "actualizando", "anterior")
+ESTADOS_VIGENCIA = ("vigente", "actualizando", "anterior", "sin_verificar")
 
 
 class ModeloVigente(_Estricto):
@@ -147,6 +147,8 @@ class ModeloVigente(_Estricto):
             raise ValueError(f"estado_vigencia debe ser uno de {ESTADOS_VIGENCIA}")
         if self.es_vigente != (self.estado_vigencia == "vigente"):
             raise ValueError("es_vigente debe ser true solo en el estado 'vigente'")
+        if self.estado_vigencia == "sin_verificar" and self.version_vigente is not None:
+            raise ValueError("en 'sin_verificar' el vigente actual es desconocido: sin version_vigente")
         return self
 
 
