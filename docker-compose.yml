@@ -1,5 +1,5 @@
-# NovaMercado — servicios de datos (etapa 3).
-# La API, MLflow y Airflow se agregan en las etapas 5–7.
+# NovaMercado — servicios de datos (etapa 3) y MLflow (etapa 5).
+# La API en contenedor y Airflow se agregan en las etapas 6–7.
 #
 # Uso:  cp .env.example .env   (y cambie las claves)
 #       docker compose up -d
@@ -45,6 +45,29 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # MLflow Tracking + Model Registry (etapa 5). Backend SQLite y artefactos en
+  # volúmenes propios: no usa la base del producto ni la de Airflow (DECISIONES.md §14).
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.22.1
+    command: >
+      mlflow server --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:////mlflow/datos/mlflow.db
+      --artifacts-destination /mlflow/artefactos --serve-artifacts --workers 1
+    volumes:
+      - mlflow_datos:/mlflow/datos
+      - mlflow_artefactos:/mlflow/artefactos
+    ports:
+      # Solo en localhost: UI y registro de modelos desde el equipo (sin autenticación)
+      - "127.0.0.1:${MLFLOW_PUERTO_HOST:-5000}:5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
 volumes:
   db_producto:
   db_airflow:
+  mlflow_datos:
+  mlflow_artefactos:

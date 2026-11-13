@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Verifica con Docker Compose que los datos del producto sobreviven a:
-#   1) docker compose restart db
+# Verifica con Docker Compose que los datos del producto y de MLflow sobreviven a:
+#   1) docker compose restart db / restart mlflow
 #   2) docker compose down + up (sin -v)
 # y que la base de Airflow es un servicio y un volumen separados.
 #
@@ -13,6 +13,7 @@ cd "$(dirname "$0")/.."
 PYTHON="${PYTHON:-python}"
 PROYECTO="novamercado-verificacion"
 PUERTO="${PUERTO_VERIFICACION:-55434}"
+PUERTO_MLFLOW="${PUERTO_MLFLOW_VERIFICACION:-55435}"
 TMP="$(mktemp -d)"
 ENV_FILE="$TMP/verificacion.env"
 
@@ -30,6 +31,7 @@ PRODUCTO_DB_PUERTO_HOST=$PUERTO
 AIRFLOW_DB_NAME=airflow
 AIRFLOW_DB_USER=airflow
 AIRFLOW_DB_PASSWORD=$CLAVE_AIRFLOW
+MLFLOW_PUERTO_HOST=$PUERTO_MLFLOW
 ENV
 
 compose() { docker compose -p "$PROYECTO" --env-file "$ENV_FILE" "$@"; }
@@ -37,23 +39,24 @@ limpiar() { compose down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$T
 trap limpiar EXIT
 
 export DATABASE_URL="postgresql+psycopg2://novamercado:$CLAVE_PRODUCTO@127.0.0.1:$PUERTO/novamercado"
+export MLFLOW_TRACKING_URI="http://127.0.0.1:$PUERTO_MLFLOW"
 
 paso() { echo; echo "== $*"; }
 
-paso "Levantar db y airflow-db"
-compose up -d --wait db airflow-db
+paso "Levantar db, airflow-db y mlflow"
+compose up -d --wait db airflow-db mlflow
 
-paso "Migrar y escribir datos sintéticos"
+paso "Migrar, escribir datos sintéticos y registrar un modelo en MLflow"
 "$PYTHON" -m scripts.verificar_persistencia escribir --estado "$TMP/estado.json"
 
-paso "Reinicio del contenedor (docker compose restart db)"
-compose restart db
-compose up -d --wait db
+paso "Reinicio de los contenedores (docker compose restart db mlflow)"
+compose restart db mlflow
+compose up -d --wait db mlflow
 "$PYTHON" -m scripts.verificar_persistencia verificar --estado "$TMP/estado.json"
 
 paso "Detener y volver a levantar sin borrar volúmenes (down + up)"
 compose down
-compose up -d --wait db airflow-db
+compose up -d --wait db airflow-db mlflow
 "$PYTHON" -m scripts.verificar_persistencia verificar --estado "$TMP/estado.json"
 
 paso "Separación de la base de Airflow"
@@ -69,4 +72,8 @@ if [ "$VOL_DB" = "$VOL_AF" ] || [ -z "$VOL_DB" ] || [ -z "$VOL_AF" ]; then
   echo "FALLO: las bases no usan volúmenes separados"; exit 1
 fi
 
-echo; echo "OK: persistencia tras reinicio y down/up verificada; bases y volúmenes separados"
+VOL_ML="$(docker inspect -f '{{range .Mounts}}{{.Name}} {{end}}' "$(compose ps -q mlflow)")"
+echo "volúmenes mlflow: $VOL_ML"
+case "$VOL_ML" in *"$VOL_DB"*|*"$VOL_AF"*) echo "FALLO: MLflow comparte un volumen con una base"; exit 1;; esac
+
+echo; echo "OK: persistencia tras reinicio y down/up verificada (producto y MLflow); bases y volúmenes separados"
