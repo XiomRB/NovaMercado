@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import logging
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -23,6 +25,8 @@ from sqlalchemy.engine import Connection, Engine
 from app.db import esquema as e
 from app.db.conexion import crear_motor, transaccion
 from ml.datos import cargar_raw
+
+logger = logging.getLogger(__name__)
 
 ORDEN = ["tiendas.csv", "familias.csv", "costos.csv", "feriados.csv", "historico_ventas.csv"]
 
@@ -68,9 +72,32 @@ def _insertar(conn: Connection, archivo: str, df: pd.DataFrame, sha: str) -> int
     return len(df)
 
 
+class DatosPublicadosAusentes(RuntimeError):
+    """Primer arranque sin los archivos publicados en la carpeta indicada."""
+
+
+def ya_cargados(motor: Engine) -> bool:
+    with transaccion(motor) as conn:
+        previas = set(conn.execute(select(e.cargas_datos.c.archivo)).scalars())
+    return set(ORDEN) <= previas
+
+
 def cargar_datos_publicados(motor: Engine, carpeta: str | Path) -> dict[str, int | str]:
-    """Devuelve por archivo el número de filas cargadas o ``"ya_cargado"``."""
+    """Devuelve por archivo el número de filas cargadas o ``"ya_cargado"``.
+
+    Etapa 6 (E6-7): si faltan archivos en ``carpeta`` pero todos ya se cargaron, se
+    omite la carga con un aviso (``"ya_cargado_sin_raw"``); en el primer arranque, la
+    falta de archivos es un error con un mensaje claro."""
     carpeta = Path(carpeta)
+    faltan = [a for a in ORDEN if not (carpeta / a).is_file()]
+    if faltan:
+        if ya_cargados(motor):
+            logger.warning("faltan %s en %s, pero los datos publicados ya están cargados: se omite la carga",
+                           faltan, carpeta)
+            return {a: "ya_cargado_sin_raw" for a in ORDEN}
+        raise DatosPublicadosAusentes(
+            f"faltan los archivos publicados {faltan} en {carpeta.resolve()}: colóquelos en la carpeta raw/ "
+            "del repositorio (ver README.md) antes del primer arranque")
     datos = cargar_raw(carpeta)  # valida columnas, tipos, duplicados y negativos
     tablas = {"tiendas.csv": datos.tiendas, "familias.csv": datos.familias, "costos.csv": datos.costos,
               "feriados.csv": datos.feriados, "historico_ventas.csv": datos.historico}
@@ -94,10 +121,16 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--raw", default="raw", help="carpeta con los archivos publicados")
     a = ap.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     motor = crear_motor(timeout_consulta=300)   # proceso por lotes: límite amplio
-    for archivo, r in cargar_datos_publicados(motor, a.raw).items():
-        print(f"{archivo}: {r}")
-    motor.dispose()
+    try:
+        for archivo, r in cargar_datos_publicados(motor, a.raw).items():
+            print(f"{archivo}: {r}")
+    except (DatosPublicadosAusentes, DatosPublicadosModificados) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    finally:
+        motor.dispose()
 
 
 if __name__ == "__main__":

@@ -48,6 +48,10 @@ LOCK = RAIZ / "requirements" / "api.lock.txt"
 SIN_HASH_PERMITIDOS = {"RECORD", "RECORD.jws", "RECORD.p7s", "INSTALLER", "REQUESTED"}
 HASH_RE = re.compile(r"^--hash=sha256:([0-9a-f]{64})$")
 MAX_DIFERENCIAS = 20
+# site-packages/README.txt lo instala el propio CPython, no un paquete: único archivo sin
+# RECORD admitido, y solo con este contenido exacto.
+README_CPYTHON = ("This directory exists so that 3rd party packages can be installed\n"
+                  "here.  Read the source for site.py for more details.\n")
 
 
 class LockInvalido(ValueError):
@@ -158,6 +162,7 @@ def _verificar_record(dist, problemas: list[str], propios: set[Path]) -> None:
         problemas.append(f"{nombre}: sin RECORD")
         return
     base = Path(dist.locate_file("")).resolve()
+    info = Path(dist._path).resolve() if hasattr(dist, "_path") else None   # su propio .dist-info
     for fila in csv.reader(io.StringIO(texto)):
         if not fila:
             continue
@@ -165,7 +170,10 @@ def _verificar_record(dist, problemas: list[str], propios: set[Path]) -> None:
         ruta = (base / ruta_rel).resolve()
         propios.add(ruta)
         if ruta.suffix in (".pyc", ".pyo"):
-            problemas.append(f"{nombre}: el RECORD lista bytecode ({ruta_rel})")
+            # Algunos wheels traen bytecode propio (p. ej. numpy). Se borra al construir:
+            # el RECORD puede listarlo solo si el archivo ya no existe.
+            if ruta.exists():
+                problemas.append(f"{nombre}: bytecode no permitido ({ruta_rel})")
             continue
         if ruta.name == "direct_url.json":
             problemas.append(f"{nombre}: instalado desde una URL o ruta (direct_url.json)")
@@ -173,7 +181,8 @@ def _verificar_record(dist, problemas: list[str], propios: set[Path]) -> None:
         if not hash_:
             if ruta.name not in SIN_HASH_PERMITIDOS:
                 problemas.append(f"{nombre}: archivo no verificable (sin hash en RECORD): {ruta_rel}")
-            elif ruta.name == "INSTALLER" and ruta.is_file() and ruta.read_text().strip() != "pip":
+            elif ruta.name == "INSTALLER" and ruta.parent == info and ruta.is_file() \
+                    and ruta.read_text().strip() != "pip":
                 problemas.append(f"{nombre}: INSTALLER no es pip")
             elif ruta.name == "REQUESTED" and ruta.is_file() and ruta.read_bytes().strip():
                 problemas.append(f"{nombre}: REQUESTED no está vacío")
@@ -188,7 +197,9 @@ def _verificar_record(dist, problemas: list[str], propios: set[Path]) -> None:
         real, tam_real = _hash_record(ruta)
         if real != valor or (tam and int(tam) != tam_real):
             problemas.append(f"{nombre}: archivo modificado: {ruta_rel}")
-        if ruta.name == "INSTALLER" and ruta.read_text().strip() != "pip":
+        # Solo el INSTALLER propio de la distribución; los de paquetes vendorizados dentro
+        # de un wheel (p. ej. setuptools/_vendor/...) se verifican por su hash.
+        if ruta.name == "INSTALLER" and ruta.parent == info and ruta.read_text().strip() != "pip":
             problemas.append(f"{nombre}: INSTALLER no es pip")
 
 
@@ -260,6 +271,8 @@ def verificar_dependencias(lock: Path = LOCK, rutas: list[str] | None = None,
                 continue
             if f.suffix in (".pyc", ".pyo"):
                 problemas.append(f"bytecode no permitido: {f}")
+            elif f.parent == sp and f.name == "README.txt" and f.read_text() == README_CPYTHON:
+                continue                   # lo instala CPython (imagen base, cubierta por el digest)
             elif f.resolve() not in propios:
                 problemas.append(f"archivo sin dueño en site-packages: {f.relative_to(sp)}"
                                  + (" (.pth)" if f.suffix == ".pth" else ""))

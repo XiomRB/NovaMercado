@@ -306,3 +306,43 @@ def test_dockerfile_fija_la_imagen_base_por_digest():
     texto = (Path(pr.RAIZ) / "Dockerfile").read_text()
     for linea in (ln for ln in texto.splitlines() if ln.startswith("FROM ")):
         assert re.search(r"@sha256:[0-9a-f]{64}", linea), linea
+
+
+def test_lock_coherente_con_las_dependencias_directas():
+    """Cada dependencia directa de comun.txt y api.txt está en el lock con la MISMA versión
+    (no se exige regenerar el lock byte a byte: el versionado es la referencia)."""
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+    raiz = Path(pr.RAIZ) / "requirements"
+    lock = dep.aplicables(dep.leer_lock((raiz / "api.lock.txt").read_text()))
+    directas = {}
+    for archivo in ("comun.txt", "api.txt"):
+        for ln in (raiz / archivo).read_text().splitlines():
+            ln = ln.split("#")[0].strip()
+            if ln and not ln.startswith("-"):
+                r = Requirement(ln)
+                directas[canonicalize_name(r.name)] = str(next(iter(r.specifier)).version)
+    assert {"numpy", "pandas", "scikit-learn", "mlflow", "pip", "setuptools", "wheel"} <= set(directas)
+    for nombre, version in directas.items():
+        assert nombre in lock and str(lock[nombre].version) == version, nombre
+
+
+def test_casos_reales_de_los_wheels(tmp_path):
+    """Hallazgos al construir la imagen: un wheel con bytecode propio en su RECORD (numpy),
+    un INSTALLER vendorizado distinto de pip (setuptools/_vendor) y el README.txt de CPython."""
+    sp = tmp_path / "site-packages"
+    vendor = b"uv\n"
+    instalar(sp, "demo", "1.0", archivos={"demo/__init__.py": b"x = 1\n",
+                                          "demo/_vendor/otro-1.0.dist-info/INSTALLER": vendor},
+             record_extra=["demo/__pycache__/m.cpython-311.pyc,sha256=abc,3"])
+    (sp / "README.txt").write_text(dep.README_CPYTHON)
+    assert verificar(tmp_path, sp, ("demo", "1.0")) == []
+    (sp / "demo" / "__pycache__").mkdir()
+    (sp / "demo" / "__pycache__" / "m.cpython-311.pyc").write_bytes(b"\0\0\0")      # si existe, se rechaza
+    (sp / "README.txt").write_text("otro contenido\n")
+    problemas = verificar(tmp_path, sp, ("demo", "1.0"))
+    assert any("bytecode no permitido (demo/__pycache__/m.cpython-311.pyc)" in p for p in problemas)
+    assert any("archivo sin dueño en site-packages: README.txt" in p for p in problemas)
+    (sp / "demo" / "_vendor" / "otro-1.0.dist-info" / "INSTALLER").write_bytes(b"pip\n")   # vendorizado: por hash
+    assert any("archivo modificado: demo/_vendor/otro-1.0.dist-info/INSTALLER" in p
+               for p in verificar(tmp_path, sp, ("demo", "1.0")))
