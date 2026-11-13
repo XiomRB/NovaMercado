@@ -75,6 +75,26 @@ RETURNING 1
 """
 
 
+# Primera sentencia de toda transacción condicionada: bloquea la fila de la concesión
+# hasta el COMMIT/ROLLBACK y lee el contador en la MISMA sentencia (en READ COMMITTED,
+# al obtener el bloqueo PostgreSQL reevalúa la fila y devuelve su última versión
+# confirmada, así que el contador leído incluye el incremento de la transacción anterior).
+SQL_FILA_CONCESION = ("SELECT epoca, latido IS NOT NULL AND latido > now() - make_interval(secs => %s), "
+                      "ultima_secuencia, pg_backend_pid(), pg_postmaster_start_time() "
+                      "FROM bloqueo_entrenamiento WHERE id = 1 FOR UPDATE")
+
+
+def asignar_secuencia_e_insertar(cur, ultima: int, decision_id: int, resultado: str, epoca: int,
+                                 motivo: str) -> int:
+    """Con la fila de la concesión ya bloqueada: ``s = ultima + 1``, contador y resolución.
+    Una transacción revertida no consume secuencia (el incremento también se revierte)."""
+    s = ultima + 1
+    cur.execute("UPDATE bloqueo_entrenamiento SET ultima_secuencia = %s WHERE id = 1", (s,))
+    cur.execute("INSERT INTO resoluciones_promocion (decision_id, resultado, epoca, motivo, secuencia) "
+                "VALUES (%s, %s, %s, %s, %s)", (decision_id, resultado, epoca, motivo[:2000], s))
+    return s
+
+
 class ConcesionEntrenamiento:
     """Lock y concesión de entrenamiento. Uso: ``with ConcesionEntrenamiento(...) as c:``."""
 
@@ -219,9 +239,7 @@ class ConcesionEntrenamiento:
         cur = self.conn.cursor()
         try:
             cur.execute("BEGIN")
-            cur.execute("SELECT epoca, latido IS NOT NULL AND latido > now() - make_interval(secs => %s), "
-                        "ultima_secuencia, pg_backend_pid(), pg_postmaster_start_time() "
-                        "FROM bloqueo_entrenamiento WHERE id = 1 FOR UPDATE", (self.vencimiento,))
+            cur.execute(SQL_FILA_CONCESION, (self.vencimiento,))
             epoca, vigente, ultima, pid, inicio = cur.fetchone()
             cur.execute("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' "
                         "AND pid = pg_backend_pid() AND granted AND objsubid = 1 AND classid = 0 "
@@ -263,13 +281,8 @@ class ConcesionEntrenamiento:
     def insertar_resolucion(self, decision_id: int, resultado: str, motivo: str) -> int:
         """Resolución con ``secuencia = ultima_secuencia + 1`` asignada dentro de la
         transacción que tiene la fila de la concesión bloqueada (§5.3)."""
-        def fn(cur, ultima):
-            s = ultima + 1
-            cur.execute("UPDATE bloqueo_entrenamiento SET ultima_secuencia = %s WHERE id = 1", (s,))
-            cur.execute("INSERT INTO resoluciones_promocion (decision_id, resultado, epoca, motivo, secuencia) "
-                        "VALUES (%s, %s, %s, %s, %s)", (decision_id, resultado, self.epoca, motivo[:2000], s))
-            return s
-        return self.condicionada(fn)
+        return self.condicionada(lambda cur, ultima: asignar_secuencia_e_insertar(
+            cur, ultima, decision_id, resultado, self.epoca, motivo))
 
     # ------------------------------------------------------------------ lectura
     def leer_vigente(self, nombre: str) -> Vigente | None:
