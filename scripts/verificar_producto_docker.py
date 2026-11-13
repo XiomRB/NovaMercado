@@ -225,8 +225,12 @@ def reinicio(como: str, antes: dict) -> None:
     seg = esperar(lambda: salud()[0] == 200 and salud()[1]["estado"] == "ok", 600, 2)
     comprobar(seg is not None, f"vuelve a /health ok en {seg or 0:.0f} s")
     comprobar("ya_cargado" in log("preparar"), "preparar: la carga responde ya_cargado")
-    comprobar("ya existe un vigente confirmado" in log("entrenamiento-inicial"),
-              "entrenamiento-inicial: no entrena de nuevo")
+    t = time.monotonic()
+    r = dc("wait", "entrenamiento-inicial", check=False, timeout=900)      # termina después de que la API
+    comprobar(r.stdout.strip().splitlines()[-1:] == ["0"], "entrenamiento-inicial terminó con código 0 "
+              f"en {time.monotonic() - t:.0f} s")                          # ya responde con el modelo
+    ultima = [ln for ln in log("entrenamiento-inicial").splitlines() if '"codigo"' in ln][-1]
+    comprobar("ya existe un vigente confirmado" in ultima, "entrenamiento-inicial: no entrena de nuevo")
     despues = estado_persistente()
     comprobar(despues == antes, f"se conservan ejecuciones, versiones, solicitudes y observaciones: {despues}")
     comprobar(http("GET", "/modelo")[1]["version"] == VIGENTE["version"],
