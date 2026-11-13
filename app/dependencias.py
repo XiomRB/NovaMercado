@@ -8,7 +8,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.config import componentes_requeridos, ruta_modelo, segundos
+from app.config import (
+    componentes_requeridos,
+    mlflow_alias,
+    mlflow_modelo_nombre,
+    mlflow_tracking_uri,
+    modelo_origen,
+    ruta_cache_modelos,
+    ruta_modelo,
+    segundos,
+)
 from app.modelo.gestor import GestorModelo
 from app.modelo.proveedores import ProveedorArchivo
 from app.orquestador import Orquestador, OrquestadorNoConfigurado
@@ -38,16 +47,32 @@ class Dependencias:
 def construir_monitor(persistencia: Persistencia, gestor: GestorModelo, orquestador: Orquestador,
                       requeridos=None, intervalo: float | None = None, limite: float | None = None) -> MonitorSalud:
     verificaciones = {"base_datos": persistencia.disponible}
-    # Etapa 5 agregará "mlflow"; etapa 7, "airflow" (orquestador.disponible).
+    # MLflow: si el proveedor del modelo sabe verificarlo (ProveedorMLflow.disponible).
+    disponible_mlflow = getattr(getattr(gestor, "proveedor", None), "disponible", None)
+    if callable(disponible_mlflow):
+        verificaciones["mlflow"] = disponible_mlflow
+    # Etapa 7: "airflow" (orquestador.disponible).
     if not isinstance(orquestador, OrquestadorNoConfigurado):
         verificaciones["airflow"] = orquestador.disponible
     return MonitorSalud(
         verificaciones=verificaciones,
         requeridos=requeridos if requeridos is not None else componentes_requeridos(),
         modelo_cargado=gestor.cargado,
+        modelo_actualizado=getattr(gestor, "actualizado", lambda: True),
         intervalo=intervalo if intervalo is not None else segundos("SALUD_INTERVALO", 10),
         limite=limite if limite is not None else segundos("SALUD_LIMITE", 3),
     )
+
+
+def construir_proveedor():
+    """``MODELO_ORIGEN=mlflow`` (producto): Model Registry con caché local.
+    ``MODELO_ORIGEN=archivo``: artefacto local de la etapa 4 (desarrollo y pruebas)."""
+    if modelo_origen() == "archivo":
+        return ProveedorArchivo(ruta_modelo())
+    from app.modelo.cache import CacheModelos
+    from app.modelo.proveedor_mlflow import ProveedorMLflow
+    return ProveedorMLflow(mlflow_tracking_uri(), mlflow_modelo_nombre(), mlflow_alias(),
+                           CacheModelos(ruta_cache_modelos()))
 
 
 def desde_entorno() -> Dependencias:
@@ -56,7 +81,7 @@ def desde_entorno() -> Dependencias:
 
     motor = crear_motor()
     persistencia = PersistenciaPostgres(motor)
-    gestor = GestorModelo(ProveedorArchivo(ruta_modelo()), intervalo=segundos("MODELO_INTERVALO_REFRESCO", 30))
+    gestor = GestorModelo(construir_proveedor(), intervalo=segundos("MODELO_INTERVALO_REFRESCO", 15))
     orquestador = OrquestadorNoConfigurado()
     monitor = construir_monitor(persistencia, gestor, orquestador)
     return Dependencias(persistencia, gestor, monitor, orquestador, motor)
