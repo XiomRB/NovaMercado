@@ -14,8 +14,9 @@ Uso:  python -m app.modelo.entrenar_mlflow [--promover si_no_hay|siempre|nunca] 
 * ``--esperar``: segundos de espera si otro entrenamiento tiene la concesión (0).
 
 Códigos de salida: 0 candidato válido · 3 candidato no válido · 2 procedencia ·
-4 promoción indeterminada · 5 otro entrenamiento en curso · 6 concesión perdida ·
-1 error.
+4 resultado del alias indeterminado (promoción o reconciliación) · 5 otro
+entrenamiento en curso · 6 concesión perdida · 1 error (incluida una reconciliación
+cuyo alias no se aplicó).
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ def ejecutar(modo: str, promover: str, esperar: float | None) -> int:
     from app.config import mlflow_alias, mlflow_modelo_nombre, mlflow_tracking_uri, url_base_datos
     from app.modelo.bloqueo import BloqueoOcupado, ConcesionPerdida
     from app.modelo.ciclo_entrenamiento import ejecutar_entrenamiento
-    from app.modelo.promocion import PromocionIndeterminada
+    from app.modelo.promocion import PromocionIndeterminada, ReconciliacionIncompleta
     try:
         r = ejecutar_entrenamiento(url_bd=url_base_datos(), tracking_uri=mlflow_tracking_uri(),
                                    nombre=mlflow_modelo_nombre(), alias=mlflow_alias(), modo=modo,
@@ -57,6 +58,10 @@ def ejecutar(modo: str, promover: str, esperar: float | None) -> int:
     except PromocionIndeterminada as exc:
         print(str(exc), file=sys.stderr)
         return INDETERMINADA
+    except ReconciliacionIncompleta as exc:
+        # no se entrena; se distingue el alias que no se aplicó del que no se pudo determinar
+        print(str(exc), file=sys.stderr)
+        return INDETERMINADA if exc.resultado == "indeterminada" else ERROR
     except Exception as exc:  # noqa: BLE001
         logging.getLogger(__name__).exception("el entrenamiento falló")
         print(f"error: {type(exc).__name__}: {exc}", file=sys.stderr)

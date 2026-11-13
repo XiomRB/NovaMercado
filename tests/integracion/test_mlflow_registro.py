@@ -423,3 +423,77 @@ def test_trazabilidad_prediccion_version_ejecucion_datos(bd, servidor_mlflow, no
     assert manifiesto["hilos_entrenamiento"] == reg.hilos_entrenamiento()
     assert manifiesto["modelos_evaluados"] == ["baseline_dow4", "hgb_relativo"]
     assert set(manifiesto["entorno"]["librerias"]) >= {"scikit-learn", "numpy", "pandas", "scipy", "joblib", "mlflow"}
+
+
+# ------------------------------------- reconciliación: el alias debe quedar confirmado
+def _inyectar_alias(mp, aplicada, consulta):
+    real_alias = MlflowClient.set_registered_model_alias
+    real_consulta = MlflowClient.get_model_version_by_alias
+    tras_fallo = []
+
+    def asignar(self, *a, **k):
+        if aplicada:
+            real_alias(self, *a, **k)
+        tras_fallo.append(True)
+        raise MlflowException("fallo inyectado: el alias venció sin respuesta")
+
+    def consultar(self, *a, **k):
+        if tras_fallo and not consulta:
+            raise ConnectionError("fallo inyectado en la consulta del alias")
+        return real_consulta(self, *a, **k)
+    mp.setattr(MlflowClient, "set_registered_model_alias", asignar)
+    mp.setattr(MlflowClient, "get_model_version_by_alias", consultar)
+
+
+@pytest.mark.parametrize("aplicada, consulta, esperado", [
+    (False, True, "no_aplicada"),        # el alias sigue en otra versión
+    (True, False, "indeterminada"),      # MLflow lo aplicó, se perdió la respuesta y falló la consulta
+    (False, False, "indeterminada"),     # no se aplicó y tampoco se pudo consultar
+], ids=["no_aplicada", "aplicada_sin_respuesta_ni_consulta", "rechazada_sin_consulta"])
+def test_reconciliacion_sin_alias_confirmado_falla_y_no_se_entrena(bd, servidor_mlflow, nombre_modelo, monkeypatch,
+                                                                    aplicada, consulta, esperado):
+    from app.modelo.ciclo_entrenamiento import ejecutar_entrenamiento
+    from app.modelo.promocion import ReconciliacionIncompleta
+    uri = servidor_mlflow.uri
+    registrar(bd, uri, nombre_modelo)                                      # v1 vigente
+    registrar(bd, uri, nombre_modelo, promover="nunca")                   # v2 válida, no vigente
+    cliente(uri).set_registered_model_alias(nombre_modelo, "vigente", "2")   # alias desincronizado
+    versiones, ejecuciones = (len(cliente(uri).search_model_versions(f"name='{nombre_modelo}'")),
+                              len(_ejecuciones(uri)))
+    with monkeypatch.context() as mp:
+        _inyectar_alias(mp, aplicada, consulta)
+        with ConcesionEntrenamiento(url_de(bd), modo="prueba") as c, \
+                pytest.raises(ReconciliacionIncompleta) as exc:
+            reconciliar(c, cliente(uri), nombre_modelo, "vigente")
+        assert exc.value.resultado == esperado and exc.value.objetivo == "1"
+        assert ("no está garantizado" in str(exc.value)) == (esperado == "indeterminada")
+    if aplicada:                                    # dejar el alias desincronizado para la segunda llamada
+        cliente(uri).set_registered_model_alias(nombre_modelo, "vigente", "2")
+    with monkeypatch.context() as mp:              # inyección nueva: el entrenamiento no empieza
+        _inyectar_alias(mp, aplicada, consulta)
+        with pytest.raises(ReconciliacionIncompleta) as exc2:
+            ejecutar_entrenamiento(url_bd=url_de(bd), tracking_uri=uri, nombre=nombre_modelo, alias="vigente",
+                                   modo="manual", git_commit="x", config=None, evaluacion=None)
+        assert exc2.value.resultado == esperado
+    assert len(cliente(uri).search_model_versions(f"name='{nombre_modelo}'")) == versiones
+    assert len(_ejecuciones(uri)) == ejecuciones                           # no se lanzó el hijo
+    # distinción: con "aplicada sin respuesta ni consulta" el alias SÍ quedó en la v1, pero
+    # el resultado se informa indeterminado porque no se pudo confirmar
+    assert alias_actual(uri, nombre_modelo) == ("1" if aplicada else "2")
+    assert vigente_pg(bd, nombre_modelo).version == "1"                    # PostgreSQL no cambió
+    with bd.connect() as conn:
+        assert conn.execute(text("SELECT latido FROM bloqueo_entrenamiento")).scalar() is None   # liberada
+
+
+def test_reconciliacion_exitosa_solo_con_el_alias_confirmado(bd, servidor_mlflow, nombre_modelo, monkeypatch):
+    uri = servidor_mlflow.uri
+    registrar(bd, uri, nombre_modelo)
+    registrar(bd, uri, nombre_modelo, promover="nunca")
+    with ConcesionEntrenamiento(url_de(bd), modo="prueba") as c:
+        assert reconciliar(c, cliente(uri), nombre_modelo, "vigente").alias == "sin cambios"
+    cliente(uri).set_registered_model_alias(nombre_modelo, "vigente", "2")
+    with monkeypatch.context() as mp:              # aplicada aunque se pierda la respuesta: la consulta lo confirma
+        _inyectar_alias(mp, aplicada=True, consulta=True)
+        with ConcesionEntrenamiento(url_de(bd), modo="prueba") as c:
+            assert reconciliar(c, cliente(uri), nombre_modelo, "vigente").alias == "aplicada"
+    assert alias_actual(uri, nombre_modelo) == "1"

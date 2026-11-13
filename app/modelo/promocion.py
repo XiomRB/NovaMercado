@@ -50,6 +50,25 @@ class PromocionIndeterminada(RuntimeError):
             "de MLflow no está garantizado hasta la siguiente reconciliación.")
 
 
+class ReconciliacionIncompleta(RuntimeError):
+    """La reconciliación no pudo confirmar el alias de MLflow. ``resultado`` distingue
+    ``no_aplicada`` (el alias quedó en otra versión) de ``indeterminada`` (no se pudo
+    consultar después del error: puede haberse aplicado o no). En ambos casos el
+    entrenamiento no empieza."""
+
+    def __init__(self, nombre: str, alias: str, objetivo: str | None, resultado: str, observado: str | None):
+        self.nombre, self.alias, self.objetivo, self.resultado, self.observado = (nombre, alias, objetivo,
+                                                                                  resultado, observado)
+        destino = f"la versión {objetivo}" if objetivo else "ninguna versión (borrar el alias)"
+        if resultado == "indeterminada":
+            detalle = ("falló y no se pudo consultar el alias después: puede haberse aplicado o no; "
+                       "no está garantizado")
+        else:
+            detalle = f"no se aplicó (el alias apunta a {observado or 'ninguna versión'})"
+        super().__init__(f"Reconciliación incompleta: el reflejo del vigente en el alias '{alias}' de "
+                         f"'{nombre}' hacia {destino} {detalle}. No se entrena.")
+
+
 @dataclass
 class ResultadoPromocion:
     autorizada: bool                  # la versión quedó estado=valido
@@ -83,21 +102,22 @@ def resolver_asignacion_alias(cliente, nombre: str, alias: str, version: str | N
     return ("aplicada", observado) if observado == esperado else ("no_aplicada", observado)
 
 
-def _escribir_alias(cliente, nombre: str, alias: str, version: str | None) -> str:
-    """ÚNICO escritor del alias. ``version=None`` lo elimina. Devuelve ``aplicada``,
-    ``no_aplicada`` o ``indeterminada`` (el servidor pudo aplicar el cambio aunque el
-    cliente reciba un error, así que se consulta antes de concluir)."""
+def _escribir_alias(cliente, nombre: str, alias: str, version: str | None) -> tuple[str, str | None]:
+    """ÚNICO escritor del alias. ``version=None`` lo elimina. Devuelve ``(resultado,
+    observado)``: ``aplicada``, ``no_aplicada`` o ``indeterminada`` (el servidor pudo
+    aplicar el cambio aunque el cliente reciba un error, así que se consulta antes de
+    concluir) y la versión observada en esa consulta."""
     try:
         if version is None:
             cliente.delete_registered_model_alias(nombre, alias)
         else:
             cliente.set_registered_model_alias(nombre, alias, str(version))
-        return "aplicada"
+        return "aplicada", (None if version is None else str(version))
     except Exception as exc:  # noqa: BLE001
         resultado, observado = resolver_asignacion_alias(cliente, nombre, alias, version)
         logger.warning("la escritura del alias %s → %s lanzó %s; resultado: %s (observado: %s)",
                        alias, version, type(exc).__name__, resultado, observado)
-        return resultado
+        return resultado, observado
 
 
 # --------------------------------------------------------------------- autorización
@@ -182,7 +202,7 @@ def autorizar_y_promover(c: ConcesionEntrenamiento, cliente, r: ResultadoRegistr
             c.verificar()
             cliente.set_model_version_tag(nombre, r.version, k, v)
         c.verificar()
-        resultado = _escribir_alias(cliente, nombre, alias, r.version)   # última operación en MLflow
+        resultado, _ = _escribir_alias(cliente, nombre, alias, r.version)   # última operación en MLflow
     except ConcesionPerdida:
         raise                  # la decisión queda sin resolver: la anula la reconciliación
     except Exception as exc:
@@ -219,8 +239,10 @@ class ResumenReconciliacion:
 
 def reconciliar(c: ConcesionEntrenamiento, cliente, nombre: str, alias: str) -> ResumenReconciliacion:
     """Con la concesión tomada (§5.5). Nunca toca versiones ``valido`` confirmadas ni las
-    de la época actual. Si MLflow no responde, la excepción se propaga y el
-    entrenamiento no empieza."""
+    de la época actual. Solo es exitosa si el alias queda **confirmado**: ``sin cambios``
+    (ya coincidía) o ``aplicada``. Si MLflow no responde, o si el reflejo del alias
+    resulta ``no_aplicada`` o ``indeterminada`` (:class:`ReconciliacionIncompleta`), la
+    excepción se propaga y el entrenamiento no empieza."""
     from mlflow.exceptions import MlflowException
 
     anuladas, invalidas, fallidas = [], [], []
@@ -267,8 +289,10 @@ def reconciliar(c: ConcesionEntrenamiento, cliente, nombre: str, alias: str) -> 
     estado_alias = "sin cambios"
     if _alias_actual(cliente, nombre, alias) != objetivo:
         c.verificar()
-        estado_alias = _escribir_alias(cliente, nombre, alias, objetivo)
+        estado_alias, observado = _escribir_alias(cliente, nombre, alias, objetivo)
         logger.warning("reconciliación: alias %s → %s (%s)", alias, objetivo, estado_alias)
+        if estado_alias != "aplicada":
+            raise ReconciliacionIncompleta(nombre, alias, objetivo, estado_alias, observado)
     if anuladas or invalidas or fallidas:
         logger.warning("reconciliación: decisiones anuladas %s, versiones inválidas %s, ejecuciones fallidas %s",
                        anuladas, invalidas, fallidas)

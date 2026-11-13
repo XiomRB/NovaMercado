@@ -921,7 +921,11 @@ de MLflow) y **T3** se registra por separado de T4b.
 * Reconciliación (con la concesión, al inicio y al final de cada entrenamiento y
   en cada arranque): anula decisiones sin resolver de épocas anteriores, invalida
   versiones huérfanas o anuladas, marca `FAILED` ejecuciones huérfanas y refleja
-  el vigente en el alias.
+  el vigente en el alias. **Solo es exitosa si el alias queda confirmado** (ya
+  coincidía, o la escritura resultó `aplicada`). Si resulta `no_aplicada` o
+  `indeterminada` lanza `ReconciliacionIncompleta` y **no se entrena**; se distingue
+  el alias que no se aplicó (código 1) del que no se pudo determinar, aunque MLflow
+  pudiera haberlo aplicado (código 4). Corrección de la revisión del PR #6.
 * S1: una versión solo es vigente con una resolución `confirmada` bajo una
   concesión vigente. S2: el proveedor solo **activa** el vigente confirmado
   (SHA de PostgreSQL antes de deserializar, T3, segunda lectura); la única otra

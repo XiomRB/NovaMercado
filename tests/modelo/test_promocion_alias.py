@@ -163,3 +163,13 @@ def test_url_por_partes_incompleta(monkeypatch):
     monkeypatch.setenv("POSTGRES_USER", "nova")
     with pytest.raises(ConfiguracionInvalida, match="faltan"):
         url_base_datos()
+
+
+@pytest.mark.parametrize("resultado, codigo", [("indeterminada", 4), ("no_aplicada", 1)])
+def test_reconciliacion_incompleta_no_entrena_y_distingue_el_resultado(cli_falso, resultado, codigo, capsys):
+    from app.modelo.promocion import ReconciliacionIncompleta
+    cli_falso(ReconciliacionIncompleta("m", "vigente", "1", resultado, "2"))
+    assert cli.main([]) == codigo
+    err = capsys.readouterr().err
+    assert "Reconciliación incompleta" in err and "No se entrena" in err
+    assert ("no está garantizado" in err) == (resultado == "indeterminada")

@@ -142,9 +142,10 @@ python -m app.modelo.entrenar_mlflow
   **PostgreSQL es la fuente de verdad del vigente**; el alias de MLflow es su
   reflejo. `--promover si_no_hay` (por defecto: solo si no hay vigente),
   `siempre` (reemplazo manual explícito; nunca omite validaciones) o `nunca`.
-  Códigos de salida: 0 válido · 3 no válido · 2 procedencia · 4 promoción
-  indeterminada · 5 otro entrenamiento en curso (`--esperar SEG`) · 6 concesión
-  perdida · 1 error.
+  Códigos de salida: 0 válido · 3 no válido · 2 procedencia · 4 resultado del
+  alias indeterminado (promoción o reconciliación) · 5 otro entrenamiento en curso
+  (`--esperar SEG`) · 6 concesión perdida · 1 error (incluido un alias que la
+  reconciliación no pudo aplicar: no se entrena).
 * **`python -m app.modelo.reproducir --run-id <id>`** reconstruye un
   entrenamiento solo desde MLflow (aunque la base haya cambiado) e informa
   `identica`, `equivalente` o `no_reproduce`.

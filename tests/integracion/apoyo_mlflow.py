@@ -72,7 +72,7 @@ def promover_existente(motor, uri, nombre, version, alias="vigente"):
     with ConcesionEntrenamiento(url_de(motor), modo="prueba") as c:
         d = c.insertar_decision(nombre=nombre, version=str(version), run_id=mv.run_id, ruta=t["ruta_artefacto"],
                                 sha256=t["sha256_artefacto"], origen="prueba")
-        assert _escribir_alias(cliente(uri), nombre, alias, str(version)) == "aplicada"
+        assert _escribir_alias(cliente(uri), nombre, alias, str(version))[0] == "aplicada"
         return d, c.insertar_resolucion(d, "confirmada", "prueba")
 
 
