@@ -64,8 +64,8 @@ esas constraints.
 | 2 ML offline (baseline, modelo, backtest) | hecho (PR #1 y #2) |
 | 3 Persistencia PostgreSQL + CI | hecho (PR #3) |
 | 4 API FastAPI | hecho (PR #4) |
-| 5 MLflow (registro, alias, recarga, health) | en revisión (`feat/etapa-5-mlflow`) |
-| 6 Docker Compose + bootstrap | pendiente |
+| 5 MLflow (registro, alias, recarga, health) | hecho (PR #5) |
+| 6 Docker Compose + bootstrap | en revisión (`feat/etapa-6`) |
 | 7 Airflow DAG + orquestador real de /admin (los endpoints ya existen) | pendiente |
 | 8 Simulador de operación | pendiente |
 | 9 Documentación final y tag `entrega-lab2` | pendiente |
@@ -80,7 +80,9 @@ app/schemas/   contrato.py (Pydantic del Anexo)
 app/db/        esquema.py, conexion.py, carga.py, repositorio.py
 app/modelo/    proveedores.py, proveedor_mlflow.py, cache.py, artefacto.py, gestor.py,
                entrenamiento.py, entrenar_local.py, copia_datos.py, evaluacion.py,
-               registro.py, entrenar_mlflow.py, reproducir.py, git_estado.py
+               registro.py (hijo), promocion.py, bloqueo.py, ciclo_entrenamiento.py,
+               trabajo_entrenamiento.py, arranque.py, procedencia.py, dependencias.py,
+               codigos_salida.py, entrenar_mlflow.py, reproducir.py, git_estado.py
 app/servicios/ persistencia.py, prediccion.py, observaciones.py, rechazos.py
 app/main.py    FastAPI; app/salud.py monitor; app/orquestador.py; app/dependencias.py
 migraciones/   Alembic
@@ -178,3 +180,24 @@ tests/fixtures/ catálogo y ejemplos sintéticos: las pruebas nunca leen raw/
 * Ninguna prueba debe leer `raw/`; usar `tests/fixtures/` o `tests/ml/sinteticos.py`.
 * Con la CPU ocupada el backtesting completo tarda ~10–15 min; las pruebas de
   `tests/ml` usan datos sintéticos y `max_iter` reducido.
+
+## Reglas de la etapa 6 (Docker, concesión y fuente de verdad)
+
+* **PostgreSQL es la fuente de verdad del vigente** (`decisiones_promocion` +
+  `resoluciones_promocion`, mayor `secuencia` confirmada). El alias y el tag
+  `estado=valido` de MLflow son reflejo: nunca decidir qué servir por ellos.
+* Solo `promocion.autorizar_y_promover` escribe `estado=valido`; solo
+  `promocion._escribir_alias` escribe o borra el alias (lo llaman
+  `autorizar_y_promover` y `reconciliar`). Una prueba AST lo verifica.
+* La concesión y el advisory lock solo se tocan en `app/modelo/bloqueo.py`; solo
+  `ciclo_entrenamiento.ejecutar_entrenamiento` la adquiere. Todo entrenamiento de
+  producción pasa por ahí (manual, arranque y, en la etapa 7, el DAG). El trabajo
+  pesado corre en el proceso hijo; el hijo nunca promueve.
+* Los comandos verifican la procedencia (`procedencia.py`) **antes** de importar el
+  resto del proyecto; no agregar opciones para omitirla.
+* Dependencias: cambiar versiones en `requirements/*.txt` y regenerar el lock con
+  `scripts/generar_lock.sh`; nunca editar `api.lock.txt` a mano. La imagen no lleva
+  bytecode.
+* Toda escritura en MLflow del supervisor va precedida de `concesion.verificar()`.
+* No usar `.dockerignore` para excluir archivos versionados (rompería la
+  procedencia): solo rutas que Git ya ignora.

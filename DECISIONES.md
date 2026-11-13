@@ -635,6 +635,11 @@ verifica **antes** de `joblib.load`. El envoltorio `pyfunc`
 
 * Backtest de 7 cortes de 28 días (el de la etapa 2) desde la copia de datos;
   candidato `hgb_relativo + mult_familia` frente a `baseline_dow4 + mult_familia`.
+* **Nota de la etapa 6:** el diseño aprobado de la etapa 5 definía **T3**
+  (artefacto descargado: SHA antes de deserializar, formato, bibliotecas, humo).
+  Esas comprobaciones se ejecutaban, pero quedaban registradas bajo T4b; desde la
+  etapa 6 T3 se registra por separado (§15). También desde la etapa 6 el
+  proveedor decide según PostgreSQL y no según el alias (§15).
 * Válido solo si: T1 sin errores · T2 salidas dentro del contrato · D1 ≥ 3
   cortes evaluables · C1 ≥ 5 % menos costo total · C2 gana ≥ ⌈2n/3⌉ cortes ·
   C3 ningún corte > 10 % peor · T4a reproducción del backtest desde la copia
@@ -803,12 +808,186 @@ nada en MLflow. No hay opción para omitirlo.
   entrenamiento) y la procedencia del commit dentro de imágenes sin `.git` son
   de la etapa 6.
 
+## 15. Producto con Docker Compose y arranque automático (etapa 6)
+
+Diseño aprobado en la versión 9 del plan (decisiones E6-1 a E6-10). Cambia dos
+puntos de la etapa 5: el proveedor decide según **PostgreSQL** (no según el alias
+de MLflow) y **T3** se registra por separado de T4b.
+
+### Servicios y arranque (E6-1, E6-5, E6-7)
+
+* Una sola imagen (`Dockerfile`) para `api`, `preparar` y `entrenamiento-inicial`:
+  las bibliotecas que entrenan son las que cargan el modelo.
+* `preparar` (una sola ejecución): `alembic upgrade head` y carga idempotente de
+  `raw/`, montado de solo lectura. Si `raw/` falta pero los datos ya están
+  cargados, se omite con un aviso; en el primer arranque es un error claro.
+* `entrenamiento-inicial` (una sola ejecución, `python -m app.modelo.arranque`):
+  si PostgreSQL ya tiene un vigente confirmado termina sin entrenar; si no,
+  entrena el primero. La API **no** lo espera y **nunca** entrena al iniciar
+  (regla de la etapa 4): arranca con `/health` en 503 y carga el modelo sola.
+* Puerto de la API: `${API_DIRECCION_PUBLICACION:-127.0.0.1}:${API_PUERTO_HOST:-8000}`.
+  Uvicorn escucha en `0.0.0.0` dentro del contenedor (necesario para el reenvío).
+* Contenedores con variables explícitas (sin `env_file`); la URL de la base se
+  arma por partes (`URL.create`, escapa la clave). Volumen nuevo `modelo_cache`.
+  `COMPONENTES_REQUERIDOS` por defecto: `api`, `base_datos`, `modelo`, `mlflow`
+  (Airflow en la etapa 7).
+* Alternativa descartada: que la API entrene al iniciar (contradice la etapa 4).
+
+### Procedencia por capas (E6-2, E6-3)
+
+| Capa | Mecanismo | Cuándo |
+|---|---|---|
+| Código propio (clase A: `app/`, `ml/`, `migraciones/`, `alembic.ini`, `requirements/comun.txt`, `api.txt`, `api.lock.txt`) | blob de Git de cada archivo frente a `procedencia.json`; archivos de más se rechazan | al construir y antes de cada entrenamiento |
+| Construcción (clase B: `Dockerfile` con el digest de la base, `.dockerignore`, `.gitattributes`, `scripts/generar_procedencia.sh`, `docker-compose.yml`) | blobs registrados con el árbol limpio | solo al construir |
+| Dependencias instaladas | `--require-hashes --no-deps`; `RECORD`, nombres y versiones contra el lock, `sys.path` | al construir y antes de cada entrenamiento |
+| Intérprete, biblioteca estándar y sistema | **solo** el digest SHA-256 de la imagen base | al descargar la base |
+
+* `procedencia.json` lo genera una etapa intermedia (`alpine/git`, por digest)
+  que recibe `.git`; la imagen final nunca contiene `.git`. Árbol sucio → la
+  imagen se construye, marcada `limpio=false`, y no puede entrenar (código 2).
+  Sin `.git` (ZIP) → no puede entrenar (E6-3). Fuera de un contenedor se usa la
+  verificación de Git de la etapa 5. No hay opción para omitirla.
+* `.gitattributes` (`eol=lf`): un clon en Windows con CRLF cambiaría los blobs.
+* Los comandos verifican la procedencia **antes** de importar el resto del
+  proyecto (`codigos_salida.py` sin dependencias): un archivo modificado no
+  llega a ejecutarse.
+* Límites: los `RECORD` no cubren la biblioteca estándar (solo el digest); una
+  imagen derivada que reescriba a la vez archivos y `RECORD` no se detecta; el
+  código y las bibliotecas son de root y de solo lectura para el usuario 10001.
+  Alternativas descartadas: montar `.git` (el código de la imagen puede no ser
+  el del repositorio montado) y un build-arg con el commit (no verifica nada).
+
+### Dependencias bloqueadas (E6-8)
+
+* `requirements/api.lock.txt`: 76 paquetes (incluidas las transitivas y
+  `pip`/`setuptools`/`wheel`) con versión exacta y hashes, generado con
+  `scripts/generar_lock.sh` dentro de la imagen base fijada (Linux, Python
+  3.11.18). Las dependencias directas conservan sus versiones (prueba).
+* `app/modelo/dependencias.py`: lector del lock en tres fases (líneas lógicas,
+  comentarios, clasificación; no línea por línea), comparación exacta (PEP 503 y
+  `packaging.version`), faltantes/adicionales/duplicados, verificación de cada
+  archivo del `RECORD` por SHA-256 y tamaño, archivos sin dueño en
+  `site-packages`, `sys.path` y sitio de usuario. Entradas sin hash admitidas:
+  `RECORD` (y firmas) e `INSTALLER`/`REQUESTED` con contenido validado.
+* Hallazgos al construir la imagen (reglas estrechas, sin debilitar la garantía):
+  numpy trae un `.pyc` en su wheel → el `RECORD` puede listar bytecode solo si
+  el archivo fue borrado; `setuptools/_vendor/…/INSTALLER` dice `uv` → la regla
+  de contenido aplica solo al `INSTALLER` del `.dist-info` propio (los
+  vendorizados se verifican por hash); `site-packages/README.txt` lo instala
+  CPython → admitido solo con su contenido exacto.
+* Sin bytecode: `pip install --no-compile`, se borran todos los `.pyc`/`.pyo`
+  (también de la biblioteca estándar), `PYTHONDONTWRITEBYTECODE=1`; el
+  entrenamiento rechaza cualquier `.pyc` en `sys.path`. La API no ejecuta esta
+  verificación (la procedencia cubre el entrenamiento).
+
+### Exclusión de entrenamientos (E6-6)
+
+* Único propietario: `app/modelo/bloqueo.py` (advisory lock de sesión, clave
+  `bigint`, + concesión `bloqueo_entrenamiento` con `epoca` y `latido`) sobre una
+  conexión psycopg2 dedicada, sin pool ni reconexión; identidad de la sesión
+  (`pg_backend_pid()`, `pg_postmaster_start_time()`) en cada sondeo. Solo la
+  adquiere `ejecutar_entrenamiento` (supervisor); `manual` espera 0 s (código 5),
+  `arranque` hasta 15 min; la etapa 7 la reutiliza.
+* Supervisor e hijo: el hijo (`trabajo_entrenamiento`) hace todo el trabajo
+  pesado y solo escribe `pendiente`/`invalido`. `PR_SET_PDEATHSIG` y **después**
+  comprobación de `getppid()`. Vigilante propio de la concesión en el hijo
+  (sale con `os._exit(6)` si la época cambia, el latido tiene más de 30 s o la
+  base no responde). El supervisor sondea cada 5 s y detiene al hijo
+  (`SIGTERM`, `SIGKILL` a los 10 s).
+* Modelo de fallos: cubiertos con cotas (bajo ese modelo, no absolutas) la caída
+  de cualquiera de los procesos, el reinicio de PostgreSQL, la pérdida de
+  conexión o partición (≤ 22 s), y la suspensión del supervisor solo (el hijo se
+  termina en ≤ 42 s); un titular nuevo espera 60 s desde el último latido.
+  Observado en las pruebas: mientras un proceso está **suspendido**, su sesión
+  sigue viva (el núcleo responde los keepalives) y su advisory lock impide que
+  otro empiece; la concesión cubre la **pérdida** de la sesión. No cubiertos en
+  tiempo: suspensión simultánea de ambos y saltos del reloj del servidor.
+
+### Ciclo de estados y fuente de verdad (E6-9)
+
+* `pendiente` (hijo) → `valido` (solo `autorizar_y_promover`) | `invalido`.
+  Orden: comprobar el resultado del hijo contra MLflow → **decisión** en
+  `decisiones_promocion` (transacción condicionada) → tags y alias en MLflow,
+  comprobando la concesión antes de cada escritura → **confirmación** en
+  `resoluciones_promocion`, solo si el alias quedó aplicado. El vigente es la
+  resolución `confirmada` de mayor `secuencia`.
+* `secuencia`: contador en la fila de la concesión, asignado en la transacción que
+  inserta la resolución con la fila bloqueada (`FOR UPDATE`), leído en la misma
+  sentencia; cada resolución (confirmada o anulada) recibe una secuencia mayor que
+  la última inserción con COMMIT; una transacción revertida no consume secuencia.
+* Un solo escritor del alias (`_escribir_alias`), usado por `autorizar_y_promover`
+  y por la reconciliación (decisión tomada durante la implementación, al
+  encontrar que el plan pedía ambas cosas). Prueba estática (AST).
+* Reconciliación (con la concesión, al inicio y al final de cada entrenamiento y
+  en cada arranque): anula decisiones sin resolver de épocas anteriores, invalida
+  versiones huérfanas o anuladas, marca `FAILED` ejecuciones huérfanas y refleja
+  el vigente en el alias.
+* S1: una versión solo es vigente con una resolución `confirmada` bajo una
+  concesión vigente. S2: el proveedor solo **activa** el vigente confirmado
+  (SHA de PostgreSQL antes de deserializar, T3, segunda lectura); la única otra
+  versión que puede seguir sirviéndose es la ya activa en estado `anterior`.
+  S3: una versión de una época antigua no puede volverse vigente después de una
+  época nueva. **No** se garantiza la coherencia permanente de MLflow (no admite
+  *fencing tokens*): una escritura tardía puede desfasar tags o alias hasta la
+  siguiente reconciliación; la API lo informa (`degradado` si el alias difiere dos
+  refrescos seguidos) y sigue sirviendo lo confirmado.
+
+### Proveedor y vigencia (E6-10)
+
+* Consulta del vigente: `vigente(V)` / `sin_vigente` (consulta exitosa sin filas:
+  se retira el modelo, 503; la caché no se usa) / `indeterminado` (cualquier
+  error: se conserva todo; sin modelo, la caché de mayor secuencia).
+* La caché solo guarda versiones confirmadas (`decision_id`, `secuencia`); con
+  `vigente(V)` solo vale la entrada de esa decisión y SHA.
+* Activación con segunda lectura antes del intercambio (sin E/S); una promoción
+  posterior a esa lectura se activa en el siguiente refresco. Adopción sin
+  descarga: misma versión y SHA con otra decisión, solo con el SHA del modelo
+  cargado, sus validaciones registradas y la segunda lectura confirmada.
+* Estados: `vigente`, `actualizando` (no degrada), `anterior` (E-ANT: se observó
+  B, no se pudo activar; se sirve A marcada y `/health` degrada). Campos
+  agregados al contrato: `modelo_es_vigente`, `es_vigente`, `estado_vigencia`,
+  `version_vigente`, `motivo`. Con la base inaccesible durante `actualizando` o
+  `anterior` se conservan el estado y la versión vigente observada.
+* Al arrancar con PostgreSQL inaccesible, el modelo de la caché se sirve en estado
+  `anterior` con `version_vigente` nulo: no hubo ninguna consulta exitosa que
+  permita afirmar que es el vigente (precisión de la implementación).
+
+### Respaldo baseline (E6-4)
+
+* Solo en el arranque, sin vigente, y solo si el candidato superó T1, T2, T3, D1,
+  T4a y T4b y falló **exclusivamente** C1–C3. Su propia ejecución sobre la copia
+  del candidato (mismos archivos de datos), `baseline_dow4 + mult_familia` con el
+  mismo calibrador; debe superar T1, T2, T3, D1, T4a, T4b y R1 (sus métricas
+  coinciden con las filas del baseline en el backtest del candidato). Si falla,
+  no hay vigente (503) y el siguiente arranque reintenta.
+
+### Verificación
+
+* Pruebas sin servidores: gestor de vigencia, proveedor, caché, escritores únicos
+  (AST), lector del lock y `RECORD`, procedencia con repositorios Git temporales,
+  criterio del respaldo, carrera de PDEATHSIG, URL por partes.
+* Integración (PostgreSQL y MLflow reales, procesos reales): concesión (procesos
+  que compiten, SIGKILL, sesión terminada, reinicio real de PostgreSQL en Docker),
+  secuencia (bloqueo con `pg_blocking_pids` y NOWAIT, 8×50 transacciones con
+  ROLLBACK), supervisor e hijo (suspensión, PDEATHSIG, arranques concurrentes),
+  arranque y respaldo, registro y autorización, API con PostgreSQL como fuente de
+  verdad.
+* Extremo a extremo con Compose (`scripts/verificar_producto_docker.sh`, job de CI).
+
+### Limitaciones
+
+* Lo dicho arriba sobre MLflow sin *fencing*, la biblioteca estándar y las imágenes
+  derivadas; la exclusión del cómputo fuera del modelo de fallos.
+* La imagen pesa ~1,1 GB (MLflow completo); el lock está resuelto para
+  `linux/amd64` con Python 3.11.18.
+* Volúmenes de una etapa 5 local: sus versiones no tienen decisión en PostgreSQL,
+  así que el arranque entrena un vigente nuevo (no se adopta el alias antiguo).
+
 ## Pendientes de decidir (etapas siguientes)
 
-No quedan decisiones abiertas de las etapas 0–5. Por definir en las siguientes:
+No quedan decisiones abiertas de las etapas 0–6. Por definir en la etapa 7:
 
-* Etapa 6: cómo verificar la procedencia del código (commit) al entrenar dentro
-  de un contenedor sin `.git`; comportamiento si el primer candidato no es válido.
-* Etapa 6: arranque automático (migraciones, carga y primer entrenamiento) y
-  `COMPONENTES_REQUERIDOS` con los cinco componentes.
-* Etapa 7: DAG, criterio de reemplazo con datos suficientes y orquestador real de `/admin`.
+* DAG y orquestador real de `/admin` (reutilizando `ejecutar_entrenamiento` y la
+  concesión), procedencia en la imagen de Airflow, reconciliación periódica,
+  criterio de reemplazo frente a un vigente de respaldo y `COMPONENTES_REQUERIDOS`
+  con `airflow`.

@@ -37,6 +37,7 @@ IMAGEN = "novamercado-app:local"
 CLAVE = "Cl@ve:/e2e%x?"                          # caracteres especiales: la URL se arma por partes
 FIX = RAIZ / "tests" / "fixtures" / "ejemplos"
 RESULTADOS: list[str] = []
+VIGENTE: dict = {}                               # versión vigente tras el arranque
 
 
 def ok(msg: str) -> None:
@@ -122,7 +123,9 @@ def log(servicio: str) -> str:
 # ------------------------------------------------------------------- etapas
 def preparar_entorno() -> None:
     from tests.ml.sinteticos import escribir_carpeta, generar_contrato
-    escribir_carpeta(generar_contrato(), TMP / "raw")
+    # 400 días: la evaluación de producción (7 cortes de 28 días + historia mínima y
+    # calibración) necesita historia suficiente; con menos, D1 falla y no hay modelo.
+    escribir_carpeta(generar_contrato(dias=400), TMP / "raw")
     texto = (RAIZ / ".env.example").read_text()
     reemplazos = {"POSTGRES_USER": "nova", "POSTGRES_DB": "novamercado", "POSTGRES_PASSWORD": f"'{CLAVE}'",
                   "AIRFLOW_DB_PASSWORD": "'otra-clave-e2e'", "PRODUCTO_DB_PUERTO_HOST": str(P_DB),
@@ -172,12 +175,16 @@ def arranque_desde_cero() -> float:
     total = time.monotonic() - t
     ok(f"/health ok {total:.0f} s después de 'docker compose up' (límite: 600 s)")
     _, m = http("GET", "/modelo")
-    comprobar(m["version"] == "1" and m["es_vigente"] and m["estado_vigencia"] == "vigente", f"/modelo: {m}")
+    comprobar(m["es_vigente"] and m["estado_vigencia"] == "vigente", f"/modelo: {m}")
+    VIGENTE["version"] = m["version"]
     arr = log("entrenamiento-inicial")
-    comprobar('"promovido": true' in arr, "entrenamiento-inicial entrenó y promovió la versión 1")
+    respaldo = '"criterio": "respaldo"' in arr
+    comprobar('"promovido": true' in arr, f"entrenamiento-inicial entrenó y promovió la versión {m['version']}"
+              + (" (respaldo baseline: el candidato falló solo C1–C3)" if respaldo else " (candidato)"))
     puerto = dc("port", "api", "8000").stdout.strip()
     comprobar(puerto.startswith("127.0.0.1:"), f"la API se publica solo en 127.0.0.1 ({puerto})")
-    tags = {t["key"]: t["value"] for t in versiones_mlflow()[0].get("tags", [])}
+    tags = {t["key"]: t["value"] for v in versiones_mlflow() if v["version"] == m["version"]
+            for t in v.get("tags", [])}
     commit = run("git", "rev-parse", "HEAD", cwd=RAIZ).stdout.strip()
     comprobar(tags.get("git_commit") == commit and tags.get("procedencia") == "imagen"
               and tags.get("codigo_verificado") == "true", "la versión registra procedencia=imagen y el commit")
@@ -188,7 +195,7 @@ def contrato() -> None:
     print("== Contrato", flush=True)
     pred = json.loads((FIX / "prediccion_valida.json").read_text())
     s, r = http("POST", "/v1/prediccion", pred)
-    comprobar(s == 200 and r["version_modelo"] == "1" and r["modelo_es_vigente"] is True,
+    comprobar(s == 200 and r["version_modelo"] == VIGENTE["version"] and r["modelo_es_vigente"] is True,
               "predicción válida: 200 con version_modelo y modelo_es_vigente")
     s, r = http("POST", "/v1/prediccion", json.loads((FIX / "errores" / "E01_tienda_texto.json").read_text()))
     comprobar(s == 200 and r["calidad"]["estado"] == "corregido", "solicitud reparable: 200 corregido")
@@ -222,7 +229,8 @@ def reinicio(como: str, antes: dict) -> None:
               "entrenamiento-inicial: no entrena de nuevo")
     despues = estado_persistente()
     comprobar(despues == antes, f"se conservan ejecuciones, versiones, solicitudes y observaciones: {despues}")
-    comprobar(http("GET", "/modelo")[1]["version"] == "1", "se sigue sirviendo la versión 1")
+    comprobar(http("GET", "/modelo")[1]["version"] == VIGENTE["version"],
+              f"se sigue sirviendo la versión {VIGENTE['version']}")
 
 
 def mlflow_detenido() -> None:
@@ -243,20 +251,23 @@ def e_ant() -> None:
     dc("pause", "api")                                     # la API no llega a descargar la versión nueva
     r = dc("run", "--rm", "--no-deps", "entrenamiento-inicial", "python", "-m", "app.modelo.entrenar_mlflow",
            "--promover", "siempre", check=False)
-    comprobar(r.returncode == 0, "entrenamiento manual en el contenedor: versión 2 promovida")
+    comprobar(r.returncode == 0 and '"promovido": true' in r.stdout,
+              "entrenamiento manual en el contenedor (--promover siempre): versión nueva promovida")
+    nueva = json.loads(r.stdout.strip().splitlines()[-1])["version_vigente"]
+    v = VIGENTE["version"]
     dc("stop", "mlflow")
     dc("unpause", "api")
     seg = esperar(lambda: http("GET", "/modelo")[1].get("estado_vigencia") == "anterior", 60, 1)
-    comprobar(seg is not None, "la API observa la versión 2, no puede obtenerla y queda en 'anterior'")
+    comprobar(seg is not None, f"la API observa la versión {nueva}, no puede obtenerla y queda en 'anterior'")
     _, m = http("GET", "/modelo")
-    comprobar((m["version"], m["es_vigente"], m["version_vigente"]) == ("1", False, "2"), f"/modelo: {m}")
+    comprobar((m["version"], m["es_vigente"], m["version_vigente"]) == (v, False, nueva), f"/modelo: {m}")
     s, r = http("POST", "/v1/prediccion", pred)
-    comprobar(s == 200 and r["version_modelo"] == "1" and r["modelo_es_vigente"] is False,
-              "las predicciones siguen con la versión 1, marcadas como no vigente")
+    comprobar(s == 200 and r["version_modelo"] == v and r["modelo_es_vigente"] is False,
+              f"las predicciones siguen con la versión {v}, marcadas como no vigente")
     comprobar(salud()[1]["estado"] == "degradado", "/health degradado")
     dc("start", "mlflow")
-    seg = esperar(lambda: http("GET", "/modelo")[1].get("version") == "2", 120, 1)
-    comprobar(seg is not None, f"al volver MLflow, la versión 2 se activa sin reinicio en {seg or 0:.0f} s")
+    seg = esperar(lambda: http("GET", "/modelo")[1].get("version") == nueva, 120, 1)
+    comprobar(seg is not None, f"al volver MLflow, la versión {nueva} se activa sin reinicio en {seg or 0:.0f} s")
 
 
 def procedencia_no_coincide() -> None:
