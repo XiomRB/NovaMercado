@@ -9,7 +9,7 @@ del Anexo tiene prioridad sobre cualquier decisión de implementación.
 |---|---|
 | Python | 3.11 |
 | Apache Airflow | 2.10.5 (pendiente, etapa 7) |
-| MLflow | 2.22.1 |
+| MLflow | 2.22.1 (cliente) e imagen `ghcr.io/mlflow/mlflow:v2.22.1` (servidor) |
 | PostgreSQL | imagen `postgres:16.14-alpine` |
 | Alembic | 1.14.1 (igual que las constraints de Airflow 2.10.5) |
 | joblib | 1.6.0 (formato del artefacto del modelo) |
@@ -605,12 +605,210 @@ esperando indefinidamente (pytest-timeout la corta a los 60 s); sin
   ocurre con el volumen actual, pero si la base crece habría que revisar índices
   o el límite.
 
+## 14. MLflow: registro, alias y proveedor del modelo (etapa 5)
+
+Diseño aprobado en las versiones 1 a 5.1 del plan (M1–M13). Resumen y hallazgos
+de la implementación.
+
+### Servidor y almacenamiento (M1, M2, M4)
+
+* Servicio `mlflow` (imagen oficial `v2.22.1`, la misma versión que el cliente)
+  con backend **SQLite** en el volumen `mlflow_datos` y artefactos en
+  `mlflow_artefactos`, servidos por el propio servidor (`--serve-artifacts`).
+  No usa la base del producto ni la de Airflow. Puerto solo en `127.0.0.1`.
+* Modelo registrado `novamercado-ventas`, alias `vigente`, experimento
+  `novamercado-entrenamiento` (el de backtest previsto como opcional no se
+  implementó: los resultados de la etapa 2 siguen en `reportes/etapa2/`).
+* PostgreSQL no cambia (M11): `version_modelo` + `nombre_modelo` llevan a la
+  versión del Registry y de ahí a su ejecución.
+
+### Única referencia: `modelo.joblib` (M3)
+
+El mismo archivo (mismos bytes) se calcula al entrenar (`sha256_artefacto`), se
+registra como artefacto del modelo `pyfunc` (`modelo/artifacts/modelo.joblib`,
+tag `ruta_artefacto`), se descarga **solo él** desde
+`runs:/<run_id>/<ruta_artefacto>`, se guarda en la caché y se carga. El SHA se
+verifica **antes** de `joblib.load`. El envoltorio `pyfunc`
+(`ml/mlflow_modelo.py`) carga el mismo archivo; la API no lo usa.
+
+### Evaluación, criterio y alias (M5, M6)
+
+* Backtest de 7 cortes de 28 días (el de la etapa 2) desde la copia de datos;
+  candidato `hgb_relativo + mult_familia` frente a `baseline_dow4 + mult_familia`.
+* Válido solo si: T1 sin errores · T2 salidas dentro del contrato · D1 ≥ 3
+  cortes evaluables · C1 ≥ 5 % menos costo total · C2 gana ≥ ⌈2n/3⌉ cortes ·
+  C3 ningún corte > 10 % peor · T4a reproducción del backtest desde la copia
+  descargada de MLflow · T4b integridad del modelo definitivo registrado.
+* `--promover si_no_hay` (por defecto) / `siempre` (reemplazo manual explícito)
+  / `nunca`. El alias **solo** se mueve con un candidato válido y como último
+  paso; nunca se omiten validaciones. Una versión en proceso queda
+  `estado=pendiente`; el proveedor solo acepta `estado=valido`.
+* **Orden de la promoción:** primero todos los tags de la versión (`estado`,
+  `motivo`, `promovido_por`, `alias_anterior`), las métricas finales,
+  `criterio.json`, los tags de la ejecución y su cierre `FINISHED`; la
+  asignación del alias es la **última** operación y después no se escribe nada
+  en MLflow (corrección de la revisión del PR #5: antes se registraban métricas
+  y tags después del alias, y un fallo ahí dejaba el alias en una versión
+  marcada `invalido`).
+* Fallos antes de la asignación: la versión queda `estado=invalido`, la
+  ejecución `FAILED` y el alias intacto. Con datos insuficientes (D1) no se
+  registra versión.
+* **Fallo de la propia asignación del alias.** Que el cliente reciba un error no
+  prueba que el servidor no aplicara el cambio (respuesta perdida, timeout). Por
+  eso, tras la excepción se **consulta el alias una vez**
+  (`resolver_asignacion_alias`):
+  * apunta a la nueva versión → la promoción **se realizó**: se conservan
+    `promovido_por`/`alias_anterior` y `promovido=true`; el comando termina bien;
+  * apunta a la versión anterior, a otra o a ninguna → candidato **válido sin
+    promover**: se retiran `promovido_por`/`alias_anterior`, `promovido=false`, y
+    el error se propaga;
+  * la consulta también falla → **indeterminado**: `PromocionIndeterminada`
+    (código de salida 4 de `entrenar_mlflow`), tags `promocion=indeterminada` en
+    la versión y `promovido=indeterminado` en la ejecución (mejor esfuerzo); se
+    conservan las marcas de promoción porque pueden ser ciertas y **no** se
+    afirma que el alias anterior siga vigente.
+  * En los tres casos la versión ya es `valido`: el alias nunca puede quedar en
+    una versión inválida.
+
+### Copia inmutable de datos y reproducción (M12)
+
+* `datos/` en cada ejecución: ventas y promociones consolidadas, observaciones,
+  promociones de solicitudes (con las supuestas marcadas), catálogos y
+  `manifiesto.json` (SHA-256 del contenido sin comprimir de cada archivo, corte,
+  configuración, umbrales, commit, bibliotecas, entorno, hilos). `huella_datos`
+  = SHA-256 del manifiesto. El entrenamiento y la evaluación **releen la copia**:
+  desde ahí nada lee PostgreSQL.
+* `python -m app.modelo.reproducir --run-id <id>`: `identica` (mismo SHA y
+  backtest igual), `equivalente` (SHA distinto, predicciones y métricas dentro de
+  tolerancia, cantidades iguales) o `no_reproduce`. Tolerancia de reales:
+  `math.isclose(rel_tol=1e-9, abs_tol=1e-9)`; enteros exactos.
+
+**Hallazgos de la implementación (determinismo de bytes):**
+
+1. **Hilos de OpenMP.** El HGB paraleliza con OpenMP:
+   * con distinto número de hilos (1, 2, 8) los bytes de `modelo.joblib` cambian;
+   * incluso con un número **fijo** de hilos (4), el orden de las reducciones
+     paralelas varía entre ejecuciones: con los datos reales, en ~1 de cada 3
+     entrenamientos un valor de un nodo cambia en el último bit (≈1e-17), y en
+     el límite podría cambiar el redondeo de una cantidad sugerida;
+   * con **1 hilo** el entrenamiento es determinista byte a byte (5 de 5
+     entrenamientos idénticos con los datos reales), a cambio de ~40 % más de
+     tiempo (19 s frente a 14 s el modelo definitivo).
+
+   Por eso `HILOS_ENTRENAMIENTO=1` por defecto, fijado **dentro del proceso** con
+   `threadpoolctl` (no depende de `OMP_NUM_THREADS` ni del número de CPU) y
+   registrado en el manifiesto; `reproducir` usa el valor registrado. Con los
+   datos sintéticos (40 iteraciones) la variación no aparecía: se detectó al
+   verificar con los datos reales.
+2. **Identidad de objetos en `pickle`.** `pickle` reutiliza referencias a un
+   mismo objeto: una configuración con cadenas literales y otra leída de JSON,
+   iguales en valor, producen bytes distintos de forma determinista (medido con
+   1 hilo). El registro toma la configuración **del manifiesto releído**, igual
+   que `reproducir`.
+
+Con ambos ajustes, dos entrenamientos en procesos independientes (con
+`PYTHONHASHSEED` y `OMP_NUM_THREADS` distintos) dan el **mismo SHA-256**, y la
+reproducción desde MLflow tras modificar PostgreSQL resulta `identica`. Si en
+otro entorno los bytes difirieran, `reproducir` informa `equivalente` cuando las
+predicciones y métricas están dentro de la tolerancia (diseño aprobado).
+
+**Defecto encontrado en MLflow 2.22:** `mlflow.artifacts.download_artifacts`
+resuelve los artefactos `mlflow-artifacts:/…` con la URI de tracking **global**
+aunque se le pase `tracking_uri`. Sin `MLFLOW_TRACKING_URI` las descargas
+fallaban o iban a un `./mlruns` local. Toda descarga pasa por
+`app/modelo/mlflow_util.py:descargar_de_ejecucion`, que resuelve la URI de
+artefactos de la ejecución contra el servidor indicado; una prueba lo verifica
+en un proceso sin estado global.
+
+### Proveedor, caché y recarga (M7–M10, M13)
+
+* `ProveedorMLflow` (interfaz de la etapa 4): la huella es la versión del alias;
+  `obtener()` usa la caché si su SHA **recalculado** coincide con el tag del
+  Registry, o descarga y valida. Errores: alias o modelo inexistente →
+  `VersionNoUtilizable`; sin respuesta → `OrigenNoDisponible`.
+* Cliente de MLflow con `MLFLOW_HTTP_REQUEST_TIMEOUT=5` y
+  `MLFLOW_HTTP_REQUEST_MAX_RETRIES=0`: con los valores por defecto un servidor
+  caído seguía reintentando a los 25 s; con estos falla en 0.01 s.
+* `GestorModelo`: refresco cada 15 s (cambio de alias detectado en ≤ 20 s);
+  conserva el modelo si falla una recarga; sin modelo y sin MLflow usa
+  `respaldo()` (caché); `actualizado()` falso si MLflow responde pero el alias
+  no ofrece una versión utilizable → `/health` `degradado` con motivo "no se
+  pudo actualizar el modelo vigente" (M9), sin dejar de predecir.
+* Componentes requeridos (M10): `.env.example` **no** define
+  `COMPONENTES_REQUERIDOS`, porque definirla anula la selección automática:
+  con `MODELO_ORIGEN=mlflow` se requiere `mlflow`; con `archivo`, no.
+* Caché (`MODELO_CACHE_DIR/<versión>/modelo.joblib` + `metadatos.json`, 3
+  versiones, escritura atómica) validada en cascada sin MLflow: metadatos →
+  SHA recalculado → formato y bibliotecas → humo; primera válida o 503.
+  **Limitación aceptada:** sin MLflow no se detecta una modificación coherente
+  del artefacto y de sus metadatos a la vez; al volver MLflow se contrasta con
+  el tag del Registry y se corrige (probado).
+* `MODELO_ORIGEN=mlflow` (producto; exige `mlflow` en `/health`) o `archivo`
+  (etapa 4, desarrollo y pruebas).
+
+### Git limpio (v5, v5.1)
+
+`entrenar_mlflow` verifica **primero** que el repositorio del código esté
+limpio. La raíz se resuelve desde la ubicación del código (no del directorio
+actual), `HEAD` se lee antes y después de `git status`, y los archivos
+ignorados no cuentan. Si no, termina con código 2 y un mensaje claro, sin crear
+nada en MLflow. No hay opción para omitirlo.
+
+### Verificación
+
+* `tests/modelo/` (73): resolución del fallo del alias con cliente simulado
+  (8 respuestas posibles de la consulta) y código de salida 4; artefacto (SHA antes de deserializar, humo), caché
+  (cascada, cinco tipos de corrupción, limitación coherente), copia de datos
+  (determinista, alteraciones), criterio C1–C3/D1/T2, tolerancias, Git (13
+  casos, incluido el comando real en un repositorio sucio), dos procesos
+  independientes con el mismo SHA, proveedor y gestor con cliente simulado.
+* `tests/integracion/test_mlflow_registro.py` (29) y `test_mlflow_api.py` (8)
+  contra un **servidor MLflow real** y PostgreSQL: registro válido y alias;
+  `si_no_hay`, `siempre` y `nunca`; candidato que no supera el costo (con
+  `si_no_hay` y `siempre`) y datos insuficientes; fallo inyectado en 5 pasos;
+  fallo inyectado en 6 operaciones previas a la promoción y en la propia
+  asignación; fallo de la asignación resuelto consultando el alias (rechazada,
+  aplicada con la respuesta perdida, y ambas con la consulta también caída →
+  indeterminada); el alias es la última escritura;
+  reproducción `identica` tras modificar la base; copia y backtest alterados;
+  T4b; trazabilidad; `/modelo` y predicción con la versión real; cambio de alias
+  detectado en < 30 s con el intervalo por defecto; MLflow detenido y
+  reiniciado; arranque desde la caché, recuperación de la versión anterior y
+  503 sin versiones válidas; caché corrupta con modelo cargado; manipulación
+  coherente corregida al volver MLflow; alias a una versión inválida o borrado;
+  8 hilos durante 10 cambios de alias entre dos modelos distintos.
+* Mutaciones detectadas: promover un candidato no válido, caché sin verificar
+  el SHA, usar la caché con un modelo cargado. La prueba de descargas sin estado
+  global falla con la implementación anterior.
+* `scripts/verificar_persistencia_docker.sh` con la imagen oficial de MLflow:
+  experimento, versión, alias y artefacto intactos tras `restart` y `down`/`up`;
+  volúmenes de MLflow separados de las dos bases.
+
+### Limitaciones
+
+* MLflow sin autenticación (solo red de Compose y `127.0.0.1`): entorno de laboratorio.
+* La limitación de la caché descrita arriba.
+* **Resolución del fallo del alias:** es una sola consulta inmediata. No se
+  reintenta (el cliente usa 0 reintentos) y no se puede excluir que una solicitud
+  que venció en el cliente se aplique en el servidor **después** de la consulta;
+  en ese caso el resultado informado ("no promovida") quedaría desactualizado y
+  el alias apuntaría a la nueva versión, que es válida. Con resultado
+  indeterminado no hay resolución automática: hay que consultar el alias en
+  MLflow (`get_model_version_by_alias`) antes de reintentar.
+* Incidencia de pruebas sin identificar (revisión del PR #5): en una ejecución
+  local de la suite completa con `34235e3` fallaron 4 pruebas que luego pasaron
+  al repetirlas, en otra suite completa, en otra ejecución de la integración y
+  en la CI. No se conservaron sus nombres ni la causa.
+* La API en contenedor, el arranque automático (migraciones, carga y primer
+  entrenamiento) y la procedencia del commit dentro de imágenes sin `.git` son
+  de la etapa 6.
+
 ## Pendientes de decidir (etapas siguientes)
 
-No quedan decisiones abiertas de las etapas 0–4. Por definir en las siguientes:
+No quedan decisiones abiertas de las etapas 0–5. Por definir en las siguientes:
 
-* Etapa 5: nombre y alias del modelo en el Model Registry, consulta del alias y
-  caché local del modelo (para seguir prediciendo con MLflow caído).
+* Etapa 6: cómo verificar la procedencia del código (commit) al entrenar dentro
+  de un contenedor sin `.git`; comportamiento si el primer candidato no es válido.
 * Etapa 6: arranque automático (migraciones, carga y primer entrenamiento) y
   `COMPONENTES_REQUERIDOS` con los cinco componentes.
 * Etapa 7: DAG, criterio de reemplazo con datos suficientes y orquestador real de `/admin`.

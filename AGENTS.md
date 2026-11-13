@@ -63,8 +63,8 @@ esas constraints.
 | 1 Calidad de datos + esquemas Pydantic | hecho (pruebas en `tests/unit`, `tests/ejemplos`) |
 | 2 ML offline (baseline, modelo, backtest) | hecho (PR #1 y #2) |
 | 3 Persistencia PostgreSQL + CI | hecho (PR #3) |
-| 4 API FastAPI | en revisión (`feat/etapa-4-api`) |
-| 5 MLflow (registro, alias, recarga, health) | pendiente |
+| 4 API FastAPI | hecho (PR #4) |
+| 5 MLflow (registro, alias, recarga, health) | en revisión (`feat/etapa-5-mlflow`) |
 | 6 Docker Compose + bootstrap | pendiente |
 | 7 Airflow DAG + orquestador real de /admin (los endpoints ya existen) | pendiente |
 | 8 Simulador de operación | pendiente |
@@ -78,7 +78,9 @@ app/calidad/   resultado.py (acciones, estado, rechazo), texto.py, numeros.py,
                prediccion.py, observaciones.py
 app/schemas/   contrato.py (Pydantic del Anexo)
 app/db/        esquema.py, conexion.py, carga.py, repositorio.py
-app/modelo/    proveedores.py, gestor.py, entrenamiento.py, entrenar_local.py
+app/modelo/    proveedores.py, proveedor_mlflow.py, cache.py, artefacto.py, gestor.py,
+               entrenamiento.py, entrenar_local.py, copia_datos.py, evaluacion.py,
+               registro.py, entrenar_mlflow.py, reproducir.py, git_estado.py
 app/servicios/ persistencia.py, prediccion.py, observaciones.py, rechazos.py
 app/main.py    FastAPI; app/salud.py monitor; app/orquestador.py; app/dependencias.py
 migraciones/   Alembic
@@ -90,6 +92,7 @@ scripts/      experimento_etapa2.py (backtesting -> reportes/etapa2/)
 tests/unit/    pruebas por módulo + robustez (fuzzing determinista)
 tests/ml/      sin fuga, costo/cuantil, baseline, backtest (datos sintéticos)
 tests/api/     contrato HTTP con persistencia en memoria (tests/api/memoria.py) y modelo sintético
+tests/modelo/  etapa 5 sin servidores (artefacto, caché, copia, criterio, Git, reproducibilidad)
 tests/integracion/ PostgreSQL real (TEST_DATABASE_URL), base nueva por prueba
 tests/ejemplos/ un ejemplo sintético por caso E01–E10 (tests/fixtures/ejemplos)
 tests/fixtures/ catálogo y ejemplos sintéticos: las pruebas nunca leen raw/
@@ -128,6 +131,29 @@ tests/fixtures/ catálogo y ejemplos sintéticos: las pruebas nunca leen raw/
 * Toda conexión de la API usa `crear_motor` (límites de conexión, `statement_timeout`
   y vigilante del cliente). Los procesos por lotes pasan `timeout_consulta` mayor;
   no crear motores con `create_engine` directo fuera de pruebas y Alembic.
+
+## Reglas de MLflow (etapa 5)
+
+* `modelo.joblib` es la **única** referencia del modelo: su SHA-256 (tag
+  `sha256_artefacto`) se verifica antes de deserializar al descargar, al leer la
+  caché y en T4b. No validar carpetas ni otros archivos.
+* El alias `vigente` solo se mueve en `app/modelo/registro.py`, como **última
+  operación** (después de tags, métricas, `criterio.json` y el cierre de la
+  ejecución; nada se escribe después) y con un candidato válido (T1–T4b, D1,
+  C1–C3). Ningún modo omite validaciones. Si la asignación lanza un error, se
+  consulta el alias (`resolver_asignacion_alias`) antes de deshacer nada: el
+  servidor pudo aplicarlo; si no se puede consultar → `PromocionIndeterminada`.
+* No definir `COMPONENTES_REQUERIDOS` en `.env.example`: se deriva de `MODELO_ORIGEN`.
+* El entrenamiento y la evaluación leen la **copia releída** (datos y
+  configuración del manifiesto) y fijan los hilos (`hilos_fijos`, 1 por
+  defecto): sin eso los bytes de `modelo.joblib` no se reproducen.
+* Descargar artefactos solo con `app/modelo/mlflow_util.descargar_de_ejecucion`
+  (MLflow 2.22 ignora `tracking_uri` con `artifact_uri="runs:/…"`).
+* `entrenar_mlflow` exige Git limpio (`app/modelo/git_estado.py`); no agregar
+  opciones para omitirlo. Las pruebas llaman a `entrenar_y_registrar` con un commit
+  de prueba.
+* Toda llamada a MLflow pasa por `configurar_cliente_mlflow()` (5 s, 0 reintentos).
+* El proveedor solo acepta versiones con `estado=valido`.
 
 ## Reglas de ML
 

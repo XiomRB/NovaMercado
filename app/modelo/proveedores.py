@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-import joblib
 import numpy as np
 import pandas as pd
 import sklearn
@@ -25,6 +24,15 @@ NOMBRE_MODELO = "novamercado-ventas"
 
 class ModeloNoDisponible(RuntimeError):
     """No hay un modelo cargado o el artefacto no se puede usar. La API responde 503."""
+
+
+class OrigenNoDisponible(ModeloNoDisponible):
+    """No se pudo consultar el origen del modelo (por ejemplo, MLflow no responde)."""
+
+
+class VersionNoUtilizable(ModeloNoDisponible):
+    """El origen responde, pero no ofrece una versión utilizable (alias inexistente,
+    versión inválida, artefacto que no pasa la validación)."""
 
 
 @dataclass(frozen=True)
@@ -71,16 +79,6 @@ class ProveedorArchivo:
         if not self.ruta.is_file():
             raise ModeloNoDisponible(f"no existe el artefacto del modelo ({self.ruta.name}); "
                                      "ejecute python -m app.modelo.entrenar_local")
-        try:
-            artefacto = joblib.load(self.ruta)
-        except Exception as exc:  # noqa: BLE001 - cualquier fallo de lectura deja el modelo no disponible
-            raise ModeloNoDisponible(f"no se pudo leer el artefacto del modelo: {type(exc).__name__}") from exc
-        if not isinstance(artefacto, dict) or artefacto.get("formato") != FORMATO_ARTEFACTO:
-            raise ModeloNoDisponible("el artefacto del modelo no tiene el formato esperado")
-        if artefacto.get("librerias") != versiones_librerias():
-            raise ModeloNoDisponible(f"el artefacto se creó con {artefacto.get('librerias')}, "
-                                     f"pero el servicio usa {versiones_librerias()}")
-        p = artefacto.get("pronosticador")
-        if not isinstance(p, Pronosticador):
-            raise ModeloNoDisponible("el artefacto no contiene un Pronosticador")
-        return ModeloCargado(p, artefacto["nombre"], self.alias, str(artefacto["version"]))
+        from app.modelo.artefacto import validar_archivo  # import diferido: artefacto importa este módulo
+        artefacto = validar_archivo(self.ruta, sha_esperado=None)
+        return ModeloCargado(artefacto["pronosticador"], artefacto["nombre"], self.alias, str(artefacto["version"]))

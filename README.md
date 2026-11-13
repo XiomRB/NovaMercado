@@ -7,10 +7,23 @@ producto, sugiere la cantidad a tener disponible según el costo de faltantes y
 sobrantes, se defiende de datos defectuosos, registra la operación y se
 reentrena automáticamente.
 
-> **Estado:** etapas 0–3 integradas (calidad de datos, contrato, modelos,
-> backtesting, persistencia y CI). Etapa 4 (API) en revisión. MLflow, el
-> arranque completo con Docker y Airflow llegan en las etapas 5–7; este README
+> **Estado:** etapas 0–4 integradas (calidad de datos, contrato, modelos,
+> backtesting, persistencia, CI y API). Etapa 5 (MLflow) en revisión. El
+> arranque completo con Docker y Airflow llegan en las etapas 6–7; este README
 > se completará con `docker compose up` cuando existan.
+
+## Arquitectura (etapa 5)
+
+```
+ tiendas ──HTTP──► API (FastAPI) ─────────────────────► PostgreSQL del producto (db)
+                    │ GestorModelo ◄── ProveedorMLflow ◄── caché local validada (MODELO_CACHE_DIR)
+                    │       ▲ cada 15 s: versión del alias "vigente"
+                    │       │
+                    │   MLflow (servicio "mlflow") ── mlflow_datos (SQLite: experimentos, registro, alias)
+                    │       ▲                       └ mlflow_artefactos (modelo.joblib, copia de datos, backtest)
+ entrenar_mlflow ───┘───────┘ lee db → copia inmutable → backtest + criterio → registra → valida → alias
+ airflow-db (separada; etapa 7)
+```
 
 ## Datos publicados
 
@@ -69,27 +82,46 @@ python -m app.db.carga --raw raw  # carga los datos publicados (idempotente)
 
 Diseño de tablas, claves, restricciones e idempotencia: `DECISIONES.md` §11.
 
-## API (etapa 4)
-
-Con las bases levantadas, migradas y cargadas (sección anterior):
+## MLflow (etapa 5)
 
 ```bash
+docker compose up -d --wait db airflow-db mlflow     # UI en http://localhost:5000
 set -a && . ./.env && set +a
-python -m app.modelo.entrenar_local          # entrena con la base y guarda modelos/modelo_local.joblib
+python -m app.modelo.entrenar_mlflow                 # entrena, evalúa, registra y (si es válido) asigna el alias
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
+
+* **`entrenar_mlflow`** requiere un repositorio **sin cambios sin confirmar**
+  (si no, termina con un mensaje claro y no crea nada). Lee la base, guarda una
+  copia inmutable de los datos en la ejecución, evalúa el candidato frente al
+  baseline en 7 cortes de 28 días (≥ 5 % menos costo, gana ≥ 5 de 7, ningún
+  corte > 10 % peor), registra `modelo.joblib`, verifica la reproducción del
+  backtest y la integridad del artefacto, y solo entonces mueve el alias.
+  `--promover si_no_hay` (por defecto: solo si no hay alias), `siempre`
+  (reemplazo manual explícito; nunca omite validaciones) o `nunca`.
+* **`python -m app.modelo.reproducir --run-id <id>`** reconstruye un
+  entrenamiento solo desde MLflow (aunque la base haya cambiado) e informa
+  `identica`, `equivalente` o `no_reproduce`.
+* La API carga la versión del alias `vigente`; un cambio de alias se detecta en
+  ≤ 20 s sin reiniciar. Con MLflow caído sigue prediciendo con el modelo cargado
+  (o, al arrancar, con la última versión válida de la caché) y `/health`
+  responde `degradado`.
+* Desarrollo sin MLflow: `MODELO_ORIGEN=archivo` y
+  `python -m app.modelo.entrenar_local` (artefacto local de la etapa 4).
+
+## API (etapa 4)
 
 | Endpoint | Etapa 4 |
 |---|---|
 | `POST /v1/prediccion` | limpieza, advertencias, predicción y registro en PostgreSQL |
 | `POST /v1/observaciones` | registro idempotente (`registros_guardados` = nuevos + modificados) |
-| `GET /modelo` | modelo cargado: `nombre`, `alias` (`local`), `version` (`local-AAAAMMDD-<hash>`) |
+| `GET /modelo` | modelo cargado: `nombre`, `alias` y `version` del Registry (con `MODELO_ORIGEN=archivo`: alias `local`) |
 | `GET /health` | `ok` / `degradado` + `motivo` (200); 503 sin modelo |
 | `POST /admin/reentrenar`, `GET /admin/reentrenar/{id}` | 503 / 404 hasta la etapa 7 (Airflow) |
 
-* La API **no entrena al iniciar**: sin artefacto responde 503 en
-  `/v1/prediccion` y `/health`. Al ejecutar `entrenar_local` con la API en
-  marcha, el modelo nuevo se carga solo (consulta cada `MODELO_INTERVALO_REFRESCO` s).
+* La API **no entrena al iniciar**: sin modelo responde 503 en
+  `/v1/prediccion` y `/health`. Un modelo nuevo (alias movido o artefacto
+  local nuevo) se carga solo (consulta cada `MODELO_INTERVALO_REFRESCO` s).
 * Rechazos: 422 con `detail`; quedan registrados (si la base no responde, se
   responde 422 igual y el fallo se registra en el log).
 * Base de datos no disponible o que no responde: 503 (nunca se entrega una
@@ -103,7 +135,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```bash
 python -m pytest -q -m "not integracion"     # sin base de datos (calidad, contrato, ML, API)
 bash scripts/pruebas_integracion_local.sh     # integración con un PostgreSQL desechable en Docker
-bash scripts/verificar_persistencia_docker.sh # reinicio y down/up de los contenedores sin perder datos
+bash scripts/verificar_persistencia_docker.sh # reinicio y down/up sin perder datos (producto y MLflow)
 ```
 
 * Ninguna prueba usa `raw/`: los datos son sintéticos (`tests/fixtures/`,
@@ -111,7 +143,9 @@ bash scripts/verificar_persistencia_docker.sh # reinicio y down/up de los conten
 * Las pruebas de integración (`tests/integracion/`, marcador `integracion`)
   necesitan `TEST_DATABASE_URL` apuntando a un servidor **desechable**: cada
   prueba crea y borra su propia base. Sin esa variable se omiten con un motivo
-  explícito. El script local la configura con un contenedor temporal.
+  explícito. El script local la configura con un contenedor temporal. Las de
+  MLflow levantan su propio servidor MLflow (proceso local con SQLite); tardan
+  unos 10 minutos.
 * `verificar_persistencia_docker.sh` usa un proyecto de Compose propio
   (`novamercado-verificacion`) con claves aleatorias y lo elimina al terminar:
   no toca los volúmenes reales.
@@ -162,7 +196,8 @@ app/
   calidad/        limpieza de datos: reparar / advertir / rechazar
   schemas/        modelos Pydantic del contrato
   db/             esquema, conexión/transacciones, carga de datos, repositorio
-  modelo/         proveedor del modelo, gestor (recarga), entrenamiento desde la base
+  modelo/         proveedores (archivo, MLflow), caché, gestor (recarga), entrenamiento,
+                  copia de datos, evaluación y criterio, registro, reproducción, Git
   servicios/      predicción, observaciones, rechazos, interfaz de persistencia
   main.py         FastAPI (endpoints y manejo de errores)
   salud.py        monitor de salud en segundo plano
@@ -176,9 +211,10 @@ requirements/     comun.txt, api.txt, dev.txt (versiones fijas)
 tests/
   unit/           pruebas por módulo y de robustez
   ml/             sin fuga temporal, costo/cuantil, modelos y backtesting
+  modelo/         artefacto, caché, copia de datos, criterio, Git, reproducibilidad (sin servidores)
   ejemplos/       un ejemplo sintético por caso del catálogo de errores
   api/            contrato HTTP, salud y modelo (persistencia en memoria, modelo sintético)
-  integracion/    PostgreSQL: migraciones, carga, idempotencia, integridad, API completa
+  integracion/    PostgreSQL y MLflow reales: migraciones, carga, idempotencia, API, registro, alias
   fixtures/       catálogo y ejemplos sintéticos (sin datos originales)
 .github/          workflow de CI y su script de resumen
 docker-compose.yml, .env.example, alembic.ini

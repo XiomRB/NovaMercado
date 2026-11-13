@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 OK, FALLA, NO_CONFIGURADO, PENDIENTE = "ok", "falla", "no_configurado", "pendiente"
+DESACTUALIZADO = "desactualizado"
 
 MOTIVOS = {
     "base_datos": "base de datos no disponible",
@@ -56,6 +57,8 @@ class MonitorSalud:
     modelo_cargado: Callable[[], bool]
     intervalo: float = 10.0
     limite: float = 3.0
+    # False si el origen responde pero no ofrece una versión utilizable (M9)
+    modelo_actualizado: Callable[[], bool] = lambda: True
     _resultados: dict[str, str] = field(default_factory=dict)
     _en_curso: dict[str, Future] = field(default_factory=dict)
 
@@ -96,7 +99,10 @@ class MonitorSalud:
         with self._candado:
             res = dict(self._resultados)
         modelo = bool(self._seguro(self.modelo_cargado))
-        componentes = {"api": OK, "modelo": OK if modelo else FALLA}
+        estado_modelo = FALLA
+        if modelo:
+            estado_modelo = OK if self._seguro(self.modelo_actualizado) else DESACTUALIZADO
+        componentes = {"api": OK, "modelo": estado_modelo}
         for nombre in ("base_datos", "mlflow", "airflow"):
             if nombre in self.verificaciones:
                 componentes[nombre] = res.get(nombre, PENDIENTE)
@@ -107,6 +113,8 @@ class MonitorSalud:
             estado = componentes.get(nombre, FALLA)
             if estado == PENDIENTE:
                 problemas.append(f"{nombre}: verificación en curso")
+            elif estado == DESACTUALIZADO:
+                problemas.append("no se pudo actualizar el modelo vigente")
             elif estado != OK:
                 problemas.append(MOTIVOS.get(nombre, f"{nombre} no disponible"))
         if problemas:

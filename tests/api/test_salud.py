@@ -2,6 +2,7 @@
 
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -129,9 +130,53 @@ def test_tiempos_por_defecto_cumplen_el_contrato(monkeypatch):
 
 def test_componentes_requeridos(monkeypatch):
     monkeypatch.delenv("COMPONENTES_REQUERIDOS", raising=False)
+    monkeypatch.setenv("MODELO_ORIGEN", "archivo")
     assert componentes_requeridos() == ("api", "base_datos", "modelo")
+    monkeypatch.setenv("MODELO_ORIGEN", "mlflow")                     # producto: también MLflow (M10)
+    assert componentes_requeridos() == ("api", "base_datos", "modelo", "mlflow")
+    monkeypatch.delenv("MODELO_ORIGEN")
+    assert componentes_requeridos() == ("api", "base_datos", "modelo", "mlflow")
     monkeypatch.setenv("COMPONENTES_REQUERIDOS", "base_datos, modelo,mlflow,airflow")
     assert componentes_requeridos() == ("api", "base_datos", "modelo", "mlflow", "airflow")
     monkeypatch.setenv("COMPONENTES_REQUERIDOS", "base_datos,redis")
     with pytest.raises(ConfiguracionInvalida, match="redis"):
         componentes_requeridos()
+
+
+def _variables_env_example() -> dict[str, str]:
+    raiz = Path(__file__).resolve().parents[2]
+    variables = {}
+    for linea in (raiz / ".env.example").read_text(encoding="utf-8").splitlines():
+        linea = linea.strip()
+        if linea and not linea.startswith("#") and "=" in linea:
+            clave, valor = linea.split("=", 1)
+            variables[clave.strip()] = valor.strip()
+    return variables
+
+
+@pytest.mark.parametrize("origen, requeridos", [
+    ("mlflow", ("api", "base_datos", "modelo", "mlflow")),
+    ("archivo", ("api", "base_datos", "modelo")),
+])
+def test_env_example_deja_que_modelo_origen_decida_si_mlflow_es_requerido(monkeypatch, origen, requeridos):
+    variables = _variables_env_example()
+    assert "COMPONENTES_REQUERIDOS" not in variables       # definirla anularía la selección automática
+    assert variables["MODELO_ORIGEN"] == "mlflow"
+    monkeypatch.delenv("COMPONENTES_REQUERIDOS", raising=False)
+    for clave, valor in variables.items():
+        monkeypatch.setenv(clave, valor)
+    monkeypatch.setenv("MODELO_ORIGEN", origen)
+    assert componentes_requeridos() == requeridos
+
+
+def test_modelo_desactualizado_degrada_sin_503():
+    estado = {"actualizado": False}
+    m = MonitorSalud(verificaciones={"base_datos": lambda: True}, requeridos=REQ, modelo_cargado=lambda: True,
+                     modelo_actualizado=lambda: estado["actualizado"], intervalo=0.2, limite=1)
+    m.ejecutar_ciclo()
+    d = m.diagnostico()
+    assert (d.estado, d.codigo_http) == ("degradado", 200)
+    assert d.motivo == "no se pudo actualizar el modelo vigente" and d.componentes["modelo"] == "desactualizado"
+    estado["actualizado"] = True
+    assert m.diagnostico().estado == "ok"
+    m.detener()

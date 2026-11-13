@@ -106,3 +106,29 @@ def url_bd_vacia(servidor):
     nombre = servidor.crear()
     yield url_para(nombre)
     servidor.borrar(nombre)
+
+
+# ------------------------------------------------------------------ MLflow (etapa 5)
+@pytest.fixture(scope="session")
+def servidor_mlflow(tmp_path_factory):
+    """Servidor MLflow real compartido (SQLite + artefactos en un directorio temporal)."""
+    from tests.integracion.mlflow_servidor import ServidorMLflow
+    s = ServidorMLflow(tmp_path_factory.mktemp("mlflow"))
+    s.iniciar()
+    yield s
+    s.detener()
+
+
+@pytest.fixture
+def servidor_mlflow_propio(tmp_path):
+    """Servidor exclusivo para pruebas que lo detienen o reinician."""
+    from tests.integracion.mlflow_servidor import ServidorMLflow
+    s = ServidorMLflow(tmp_path / "mlflow_propio")
+    s.iniciar()
+    yield s
+    s.detener()
+
+
+@pytest.fixture
+def nombre_modelo():
+    return f"nm-prueba-{uuid.uuid4().hex[:8]}"

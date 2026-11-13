@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -82,6 +83,53 @@ def escribir(motor) -> dict:
     return huella(motor)
 
 
+# ---------------------------------------------------------------- MLflow (etapa 5)
+MODELO_VERIFICACION = "verificacion-persistencia"
+
+
+def escribir_mlflow(uri: str) -> dict:
+    """Registra un modelo pequeño con un artefacto conocido y le asigna el alias."""
+    import hashlib
+
+    from app.config import configurar_cliente_mlflow
+    configurar_cliente_mlflow()
+    import mlflow
+    from mlflow import MlflowClient
+    mlflow.set_tracking_uri(uri)
+    mlflow.set_experiment("verificacion-persistencia")
+    contenido = b"artefacto de verificacion de persistencia\n"
+    with tempfile.TemporaryDirectory() as tmp, mlflow.start_run() as run:
+        ruta = Path(tmp) / "modelo.joblib"
+        ruta.write_bytes(contenido)
+        mlflow.log_artifact(str(ruta), "modelo/artifacts")
+    c = MlflowClient(uri, uri)
+    v = mlflow.register_model(f"runs:/{run.info.run_id}/modelo", MODELO_VERIFICACION)
+    c.set_registered_model_alias(MODELO_VERIFICACION, "vigente", v.version)
+    return {"run_id": run.info.run_id, "version": str(v.version), "sha256": hashlib.sha256(contenido).hexdigest()}
+
+
+def verificar_mlflow(uri: str, esperado: dict) -> list[str]:
+    import hashlib
+
+    from app.config import configurar_cliente_mlflow
+    configurar_cliente_mlflow()
+    from mlflow import MlflowClient
+
+    from app.modelo.mlflow_util import descargar_de_ejecucion
+    c = MlflowClient(uri, uri)
+    problemas = []
+    mv = c.get_model_version_by_alias(MODELO_VERIFICACION, "vigente")
+    if str(mv.version) != esperado["version"] or mv.run_id != esperado["run_id"]:
+        problemas.append(f"alias vigente -> versión {mv.version} (run {mv.run_id}); esperado {esperado}")
+    with tempfile.TemporaryDirectory() as tmp:
+        ruta = descargar_de_ejecucion(uri, esperado["run_id"], "modelo/artifacts/modelo.joblib", tmp)
+        if hashlib.sha256(Path(ruta).read_bytes()).hexdigest() != esperado["sha256"]:
+            problemas.append("el artefacto registrado cambió")
+    if c.get_experiment_by_name("verificacion-persistencia") is None:
+        problemas.append("se perdió el experimento")
+    return problemas
+
+
 def verificar(motor, esperado: dict) -> list[str]:
     problemas = []
     actual = huella(motor)
@@ -109,16 +157,24 @@ def main() -> int:
     a = ap.parse_args()
     motor = crear_motor(timeout_consulta=300)
     try:
+        uri = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
         if a.accion == "escribir":
             estado = escribir(motor)
+            if uri:
+                estado["mlflow"] = escribir_mlflow(uri)
             a.estado.write_text(json.dumps(estado, indent=2), encoding="utf-8")
-            print(f"escrito: {estado['conteos']}")
+            print(f"escrito: {estado['conteos']}" + (f"; MLflow versión {estado['mlflow']['version']}" if uri else ""))
             return 0
-        problemas = verificar(motor, json.loads(a.estado.read_text(encoding="utf-8")))
+        esperado = json.loads(a.estado.read_text(encoding="utf-8"))
+        esperado_mlflow = esperado.pop("mlflow", None)
+        problemas = verificar(motor, esperado)
+        if esperado_mlflow is not None:
+            problemas += verificar_mlflow(uri, esperado_mlflow)
         if problemas:
             print("FALLO de persistencia:\n  " + "\n  ".join(problemas))
             return 1
-        print("persistencia verificada: datos, migración y cargas intactos")
+        print("persistencia verificada: datos, migración y cargas intactos"
+              + ("; MLflow: experimento, versión, alias y artefacto intactos" if esperado_mlflow else ""))
         return 0
     finally:
         motor.dispose()
