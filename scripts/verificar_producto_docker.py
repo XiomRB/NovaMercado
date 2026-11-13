@@ -227,7 +227,7 @@ def reinicio(como: str, antes: dict) -> None:
     comprobar("ya_cargado" in log("preparar"), "preparar: la carga responde ya_cargado")
     t = time.monotonic()
     r = dc("wait", "entrenamiento-inicial", check=False, timeout=900)      # termina después de que la API
-    comprobar(r.stdout.strip().splitlines()[-1:] == ["0"], "entrenamiento-inicial terminó con código 0 "
+    comprobar(r.returncode == 0, "entrenamiento-inicial terminó con código 0 "
               f"en {time.monotonic() - t:.0f} s")                          # ya responde con el modelo
     ultima = [ln for ln in log("entrenamiento-inicial").splitlines() if '"codigo"' in ln][-1]
     comprobar("ya existe un vigente confirmado" in ultima, "entrenamiento-inicial: no entrena de nuevo")
