@@ -101,13 +101,11 @@ class ProveedorMLflow:
         return ModeloCargado(artefacto["pronosticador"], self.nombre, self.alias, v.version)
 
     def _descargar_y_guardar(self, v: VersionRegistrada, metadatos: dict) -> dict:
-        import mlflow.artifacts
-
         from app.modelo.artefacto import validar_archivo
+        from app.modelo.mlflow_util import descargar_de_ejecucion
         with tempfile.TemporaryDirectory(prefix="nm_descarga_") as tmp:
             try:
-                ruta = mlflow.artifacts.download_artifacts(
-                    artifact_uri=f"runs:/{v.run_id}/{v.ruta}", dst_path=tmp, tracking_uri=self.tracking_uri)
+                ruta = descargar_de_ejecucion(self.tracking_uri, v.run_id, v.ruta, tmp)
             except Exception as exc:  # noqa: BLE001
                 raise OrigenNoDisponible("no se pudo descargar el artefacto desde MLflow") from exc
             artefacto = validar_archivo(ruta, v.sha256)  # SHA contra el tag ANTES de deserializar

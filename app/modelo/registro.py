@@ -43,6 +43,7 @@ from app.modelo.evaluacion import (
     evaluar_criterio,
     leer_tabla_csv,
 )
+from app.modelo.mlflow_util import descargar_de_ejecucion
 from app.modelo.proveedores import versiones_librerias
 from ml.pronosticador import ConfigEntrenamiento, Pronosticador
 
@@ -55,11 +56,13 @@ RUTA_BACKTEST = "backtest"
 ARCHIVO_BACKTEST = "resultados_por_corte.csv"
 MODOS_PROMOVER = ("si_no_hay", "siempre", "nunca")
 RAIZ = Path(__file__).resolve().parents[2]
-# Hilos de OpenMP fijos para entrenar y evaluar: el orden de las sumas en punto
-# flotante depende del número de hilos, y con él los bytes de modelo.joblib.
-# Fijarlo dentro del proceso hace la reproducción idéntica en máquinas con otro
-# número de CPU (DECISIONES.md §14).
-HILOS_POR_DEFECTO = 4
+# Hilos de OpenMP fijos para entrenar y evaluar (DECISIONES.md §14). Con varios
+# hilos, el orden de las reducciones paralelas del HGB cambia de una ejecución a
+# otra y algunos valores varían en el último bit (≈1e-17): los bytes de
+# modelo.joblib no se reproducen y, en el límite, una cantidad podría redondearse
+# distinto. Con 1 hilo el entrenamiento es determinista byte a byte (medido: 5 de
+# 5 entrenamientos idénticos con los datos reales) a cambio de ~40 % más de tiempo.
+HILOS_POR_DEFECTO = 1
 
 
 def hilos_entrenamiento() -> int:
@@ -243,13 +246,11 @@ def entrenar_y_registrar(motor, *, tracking_uri: str, nombre: str, alias: str, p
 
 def verificar_t4b(tracking_uri: str, run_id: str, ruta_artefacto: str, sha: str) -> str | None:
     """Integridad del modelo definitivo registrado. Devuelve el motivo del fallo o None."""
-    import mlflow.artifacts
 
     from app.modelo.proveedores import ModeloNoDisponible
     with tempfile.TemporaryDirectory(prefix="nm_t4b_") as tmp:
         try:
-            ruta = mlflow.artifacts.download_artifacts(artifact_uri=f"runs:/{run_id}/{ruta_artefacto}",
-                                                       dst_path=tmp, tracking_uri=tracking_uri)
+            ruta = descargar_de_ejecucion(tracking_uri, run_id, ruta_artefacto, tmp)
             validar_archivo(ruta, sha)
         except ModeloNoDisponible as exc:
             return str(exc)
@@ -257,15 +258,11 @@ def verificar_t4b(tracking_uri: str, run_id: str, ruta_artefacto: str, sha: str)
 
 
 def descargar_copia(tracking_uri: str, run_id: str, destino: Path) -> Path:
-    import mlflow.artifacts
-    return Path(mlflow.artifacts.download_artifacts(artifact_uri=f"runs:/{run_id}/{RUTA_DATOS}",
-                                                    dst_path=str(destino), tracking_uri=tracking_uri))
+    return Path(descargar_de_ejecucion(tracking_uri, run_id, RUTA_DATOS, str(destino)))
 
 
 def descargar_backtest(tracking_uri: str, run_id: str, destino: Path, sha_esperado: str) -> pd.DataFrame:
-    import mlflow.artifacts
-    ruta = mlflow.artifacts.download_artifacts(artifact_uri=f"runs:/{run_id}/{RUTA_BACKTEST}/{ARCHIVO_BACKTEST}",
-                                               dst_path=str(destino), tracking_uri=tracking_uri)
+    ruta = descargar_de_ejecucion(tracking_uri, run_id, f"{RUTA_BACKTEST}/{ARCHIVO_BACKTEST}", str(destino))
     crudo = Path(ruta).read_bytes()
     if sha256(crudo) != sha_esperado:
         raise ValueError("los resultados del backtest registrados no coinciden con su SHA-256")

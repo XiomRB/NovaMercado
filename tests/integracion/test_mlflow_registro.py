@@ -12,6 +12,7 @@ from sqlalchemy import text
 
 import app.modelo.registro as reg
 from app.db.conexion import transaccion
+from app.modelo.mlflow_util import descargar_de_ejecucion
 from app.modelo.reproducir import reproducir
 from tests.integracion.apoyo_mlflow import (
     alias_actual,
@@ -62,8 +63,7 @@ def test_candidato_valido_se_registra_y_recibe_el_alias(bd, servidor_mlflow, nom
     assert m["mejora_pct"] > 5 and m["cortes_ganados"] == 3 and "segundos_t4a" in m
     arte = {a.path for a in cliente(uri).list_artifacts(r.run_id)}
     assert {"datos", "backtest", "modelo", "criterio.json"} <= arte
-    criterio = json.loads(Path(mlflow.artifacts.download_artifacts(
-        artifact_uri=f"runs:/{r.run_id}/criterio.json", tracking_uri=uri)).read_text())
+    criterio = json.loads(Path(descargar_de_ejecucion(uri, r.run_id, "criterio.json")).read_text())
     assert criterio["condiciones"] == {"T2": True, "D1": True, "C1": True, "C2": True, "C3": True,
                                        "T4a": True, "T4b": True}
 
@@ -217,8 +217,7 @@ def test_trazabilidad_prediccion_version_ejecucion_datos(bd, servidor_mlflow, no
     assert run.info.run_id == r.run_id
     assert run.data.tags["huella_datos"] == t["huella_datos"]
     assert run.data.tags["sha256_backtest"] == t["sha256_backtest"]
-    manifiesto = json.loads(Path(mlflow.artifacts.download_artifacts(
-        artifact_uri=f"runs:/{r.run_id}/datos/manifiesto.json", tracking_uri=uri)).read_text())
+    manifiesto = json.loads(Path(descargar_de_ejecucion(uri, r.run_id, "datos/manifiesto.json")).read_text())
     assert manifiesto["git_commit"] == "commit-de-prueba" and manifiesto["corte"] == t["corte"]
     assert manifiesto["hilos_entrenamiento"] == reg.hilos_entrenamiento()
     assert set(manifiesto["entorno"]["librerias"]) >= {"scikit-learn", "numpy", "pandas", "scipy", "joblib", "mlflow"}

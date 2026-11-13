@@ -47,11 +47,10 @@ def tags_version(uri, nombre, version):
 
 def pronosticador_de(uri, nombre, version):
     """Descarga modelo.joblib de una versión (para comparar predicciones en las pruebas)."""
-    import mlflow.artifacts
+    from app.modelo.mlflow_util import descargar_de_ejecucion
     t = tags_version(uri, nombre, version)
     mv = cliente(uri).get_model_version(nombre, version)
-    ruta = mlflow.artifacts.download_artifacts(artifact_uri=f"runs:/{mv.run_id}/{t['ruta_artefacto']}",
-                                               tracking_uri=uri)
+    ruta = descargar_de_ejecucion(uri, mv.run_id, t["ruta_artefacto"])
     return joblib.load(io.BytesIO(open(ruta, "rb").read()))["pronosticador"]
 
 

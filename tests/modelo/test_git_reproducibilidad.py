@@ -165,7 +165,7 @@ def test_dos_entrenamientos_independientes_dan_el_mismo_artefacto(tmp_path):
     from app.modelo.evaluacion import ConfigEvaluacion
     from tests.modelo.conftest import CONFIG_RAPIDA, datos_entrenamiento
     escribir_copia(datos_entrenamiento(), tmp_path / "copia", {
-        "config": asdict(CONFIG_RAPIDA), "evaluacion": ConfigEvaluacion().como_dict(), "hilos_entrenamiento": 4})
+        "config": asdict(CONFIG_RAPIDA), "evaluacion": ConfigEvaluacion().como_dict(), "hilos_entrenamiento": 1})
     shas = []
     for semilla, hilos in (("0", "1"), ("12345", "8")):
         env = {**os.environ, "PYTHONHASHSEED": semilla, "OMP_NUM_THREADS": hilos, "PYTHONPATH": str(RAIZ)}

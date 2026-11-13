@@ -251,3 +251,32 @@ def test_concurrencia_durante_cambios_de_alias(bd, servidor_mlflow, nombre_model
     assert errores == [] and set(versiones) == {"1", "2"} and len(versiones) > 20
     assert alias_actual(uri, nombre_modelo) == "1"
     d.monitor.detener()
+
+
+def test_descargas_usan_el_servidor_indicado_sin_estado_global(bd, servidor_mlflow, nombre_modelo, tmp_path):
+    """Regresión: MLflow 2.22 ignora tracking_uri con artifact_uri="runs:/…". En un proceso
+    nuevo, sin MLFLOW_TRACKING_URI ni URI global, todo debe ir al servidor indicado."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    r = registrar(bd, servidor_mlflow.uri, nombre_modelo)
+    t = tags_version(servidor_mlflow.uri, nombre_modelo, r.version)
+    codigo = f"""
+import mlflow
+from app.modelo.cache import CacheModelos
+from app.modelo.proveedor_mlflow import ProveedorMLflow
+from app.modelo.registro import verificar_t4b
+mlflow.set_tracking_uri("file:///nonexistent-global")       # una URI global distinta y vacía
+p = ProveedorMLflow({servidor_mlflow.uri!r}, {nombre_modelo!r}, "vigente", CacheModelos({str(tmp_path / 'c')!r}))
+p.huella()
+assert p.obtener().version == "1"
+assert verificar_t4b({servidor_mlflow.uri!r}, {r.run_id!r}, {t['ruta_artefacto']!r}, {t['sha256_artefacto']!r}) is None
+print("ok")
+"""
+    raiz = Path(__file__).resolve().parents[2]
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MLFLOW_TRACKING")}
+    p = subprocess.run([sys.executable, "-c", codigo], cwd=tmp_path, env={**env, "PYTHONPATH": str(raiz)},
+                       capture_output=True, text=True, timeout=300)
+    assert p.returncode == 0 and p.stdout.strip().endswith("ok"), p.stderr[-2000:]
+    assert not (tmp_path / "mlruns").exists()

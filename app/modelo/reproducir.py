@@ -31,6 +31,7 @@ from app.config import configurar_cliente_mlflow, mlflow_tracking_uri
 from app.modelo.artefacto import NOMBRE_ARCHIVO, prueba_de_humo, sha256_bytes, validar_archivo
 from app.modelo.copia_datos import CopiaDatosInvalida, leer_copia
 from app.modelo.evaluacion import TOL_ABS, TOL_REL, comparar_metricas, evaluar
+from app.modelo.mlflow_util import descargar_de_ejecucion
 from app.modelo.registro import (
     HILOS_POR_DEFECTO,
     config_desde_manifiesto,
@@ -115,9 +116,7 @@ def reproducir(run_id: str, tracking_uri: str, cliente=None) -> ResultadoReprodu
         if backtest_igual and sha_rep == sha_reg:
             return ResultadoReproduccion("identica", True, sha_reg, sha_rep, [], advertencias)
 
-        import mlflow.artifacts
-        ruta = mlflow.artifacts.download_artifacts(artifact_uri=f"runs:/{run_id}/{vt['ruta_artefacto']}",
-                                                   dst_path=str(tmp / "reg"), tracking_uri=tracking_uri)
+        ruta = descargar_de_ejecucion(tracking_uri, run_id, vt["ruta_artefacto"], str(tmp / "reg"))
         original = validar_archivo(ruta, sha_reg)["pronosticador"]
         obj, ventas = _objetivos(datos, ev.horizonte)
         difs += comparar_predicciones(original.predecir(obj, ventas), p.predecir(obj, ventas))

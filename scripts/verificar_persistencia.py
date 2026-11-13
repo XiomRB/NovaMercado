@@ -113,16 +113,16 @@ def verificar_mlflow(uri: str, esperado: dict) -> list[str]:
 
     from app.config import configurar_cliente_mlflow
     configurar_cliente_mlflow()
-    import mlflow.artifacts
     from mlflow import MlflowClient
+
+    from app.modelo.mlflow_util import descargar_de_ejecucion
     c = MlflowClient(uri, uri)
     problemas = []
     mv = c.get_model_version_by_alias(MODELO_VERIFICACION, "vigente")
     if str(mv.version) != esperado["version"] or mv.run_id != esperado["run_id"]:
         problemas.append(f"alias vigente -> versión {mv.version} (run {mv.run_id}); esperado {esperado}")
     with tempfile.TemporaryDirectory() as tmp:
-        ruta = mlflow.artifacts.download_artifacts(
-            artifact_uri=f"runs:/{esperado['run_id']}/modelo/artifacts/modelo.joblib", dst_path=tmp, tracking_uri=uri)
+        ruta = descargar_de_ejecucion(uri, esperado["run_id"], "modelo/artifacts/modelo.joblib", tmp)
         if hashlib.sha256(Path(ruta).read_bytes()).hexdigest() != esperado["sha256"]:
             problemas.append("el artefacto registrado cambió")
     if c.get_experiment_by_name("verificacion-persistencia") is None:
