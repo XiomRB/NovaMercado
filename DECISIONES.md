@@ -651,11 +651,24 @@ verifica **antes** de `joblib.load`. El envoltorio `pyfunc`
   y tags después del alias, y un fallo ahí dejaba el alias en una versión
   marcada `invalido`).
 * Fallos antes de la asignación: la versión queda `estado=invalido`, la
-  ejecución `FAILED` y el alias intacto. Si falla la propia asignación (una
-  sola llamada al Registry), el alias anterior sigue igual; la versión queda
-  `valido` sin promover (se retiran `promovido_por`/`alias_anterior`, la
-  ejecución queda `promovido=false`) y el comando termina con error. Con datos
-  insuficientes (D1) no se registra versión.
+  ejecución `FAILED` y el alias intacto. Con datos insuficientes (D1) no se
+  registra versión.
+* **Fallo de la propia asignación del alias.** Que el cliente reciba un error no
+  prueba que el servidor no aplicara el cambio (respuesta perdida, timeout). Por
+  eso, tras la excepción se **consulta el alias una vez**
+  (`resolver_asignacion_alias`):
+  * apunta a la nueva versión → la promoción **se realizó**: se conservan
+    `promovido_por`/`alias_anterior` y `promovido=true`; el comando termina bien;
+  * apunta a la versión anterior, a otra o a ninguna → candidato **válido sin
+    promover**: se retiran `promovido_por`/`alias_anterior`, `promovido=false`, y
+    el error se propaga;
+  * la consulta también falla → **indeterminado**: `PromocionIndeterminada`
+    (código de salida 4 de `entrenar_mlflow`), tags `promocion=indeterminada` en
+    la versión y `promovido=indeterminado` en la ejecución (mejor esfuerzo); se
+    conservan las marcas de promoción porque pueden ser ciertas y **no** se
+    afirma que el alias anterior siga vigente.
+  * En los tres casos la versión ya es `valido`: el alias nunca puede quedar en
+    una versión inválida.
 
 ### Copia inmutable de datos y reproducción (M12)
 
@@ -743,17 +756,20 @@ nada en MLflow. No hay opción para omitirlo.
 
 ### Verificación
 
-* `tests/modelo/` (63): artefacto (SHA antes de deserializar, humo), caché
+* `tests/modelo/` (73): resolución del fallo del alias con cliente simulado
+  (8 respuestas posibles de la consulta) y código de salida 4; artefacto (SHA antes de deserializar, humo), caché
   (cascada, cinco tipos de corrupción, limitación coherente), copia de datos
   (determinista, alteraciones), criterio C1–C3/D1/T2, tolerancias, Git (13
   casos, incluido el comando real en un repositorio sucio), dos procesos
   independientes con el mismo SHA, proveedor y gestor con cliente simulado.
-* `tests/integracion/test_mlflow_registro.py` (26) y `test_mlflow_api.py` (8)
+* `tests/integracion/test_mlflow_registro.py` (29) y `test_mlflow_api.py` (8)
   contra un **servidor MLflow real** y PostgreSQL: registro válido y alias;
   `si_no_hay`, `siempre` y `nunca`; candidato que no supera el costo (con
   `si_no_hay` y `siempre`) y datos insuficientes; fallo inyectado en 5 pasos;
   fallo inyectado en 6 operaciones previas a la promoción y en la propia
-  asignación (alias anterior intacto); el alias es la última escritura;
+  asignación; fallo de la asignación resuelto consultando el alias (rechazada,
+  aplicada con la respuesta perdida, y ambas con la consulta también caída →
+  indeterminada); el alias es la última escritura;
   reproducción `identica` tras modificar la base; copia y backtest alterados;
   T4b; trazabilidad; `/modelo` y predicción con la versión real; cambio de alias
   detectado en < 30 s con el intervalo por defecto; MLflow detenido y
@@ -772,6 +788,17 @@ nada en MLflow. No hay opción para omitirlo.
 
 * MLflow sin autenticación (solo red de Compose y `127.0.0.1`): entorno de laboratorio.
 * La limitación de la caché descrita arriba.
+* **Resolución del fallo del alias:** es una sola consulta inmediata. No se
+  reintenta (el cliente usa 0 reintentos) y no se puede excluir que una solicitud
+  que venció en el cliente se aplique en el servidor **después** de la consulta;
+  en ese caso el resultado informado ("no promovida") quedaría desactualizado y
+  el alias apuntaría a la nueva versión, que es válida. Con resultado
+  indeterminado no hay resolución automática: hay que consultar el alias en
+  MLflow (`get_model_version_by_alias`) antes de reintentar.
+* Incidencia de pruebas sin identificar (revisión del PR #5): en una ejecución
+  local de la suite completa con `34235e3` fallaron 4 pruebas que luego pasaron
+  al repetirlas, en otra suite completa, en otra ejecución de la integración y
+  en la CI. No se conservaron sus nombres ni la causa.
 * La API en contenedor, el arranque automático (migraciones, carga y primer
   entrenamiento) y la procedencia del commit dentro de imágenes sin `.git` son
   de la etapa 6.

@@ -140,7 +140,9 @@ tests/fixtures/ catálogo y ejemplos sintéticos: las pruebas nunca leen raw/
 * El alias `vigente` solo se mueve en `app/modelo/registro.py`, como **última
   operación** (después de tags, métricas, `criterio.json` y el cierre de la
   ejecución; nada se escribe después) y con un candidato válido (T1–T4b, D1,
-  C1–C3). Ningún modo omite validaciones.
+  C1–C3). Ningún modo omite validaciones. Si la asignación lanza un error, se
+  consulta el alias (`resolver_asignacion_alias`) antes de deshacer nada: el
+  servidor pudo aplicarlo; si no se puede consultar → `PromocionIndeterminada`.
 * No definir `COMPONENTES_REQUERIDOS` en `.env.example`: se deriva de `MODELO_ORIGEN`.
 * El entrenamiento y la evaluación leen la **copia releída** (datos y
   configuración del manifiesto) y fijan los hilos (`hilos_fijos`, 1 por

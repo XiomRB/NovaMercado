@@ -214,21 +214,60 @@ def test_fallo_previo_a_la_promocion_deja_el_alias_anterior(bd, servidor_mlflow,
     assert mlflow.active_run() is None
 
 
-def test_fallo_al_asignar_el_alias_lo_deja_intacto(bd, servidor_mlflow, nombre_modelo, monkeypatch):
+@pytest.mark.parametrize("aplicada, consulta", [
+    (False, True),     # el servidor rechazó el cambio; la consulta ve el alias anterior
+    (True, True),      # el servidor lo aplicó pero se perdió la respuesta; la consulta lo confirma
+    (False, False),    # rechazado y la consulta también falla
+    (True, False),     # aplicado y la consulta también falla
+], ids=["rechazada", "aplicada_sin_respuesta", "rechazada_sin_consulta", "aplicada_sin_consulta"])
+def test_fallo_al_asignar_el_alias_se_resuelve_consultandolo(bd, servidor_mlflow, nombre_modelo, monkeypatch,
+                                                            aplicada, consulta):
+    """Falla de ``set_registered_model_alias`` contra el servidor real. ``aplicada`` simula
+    una respuesta perdida: la llamada real se hace y después se lanza el error."""
+    from mlflow.exceptions import MlflowException
     uri = servidor_mlflow.uri
     registrar(bd, uri, nombre_modelo)                                       # v1 vigente
+    real_alias = MlflowClient.set_registered_model_alias
+    real_consulta = MlflowClient.get_model_version_by_alias
+    tras_fallo = []
 
-    def falla(*a, **k):
-        raise RuntimeError("fallo inyectado al asignar el alias")
-    with monkeypatch.context() as mp, pytest.raises(RuntimeError, match="fallo inyectado"):
-        mp.setattr(MlflowClient, "set_registered_model_alias", falla)
-        registrar(bd, uri, nombre_modelo, promover="siempre")
+    def asignar(self, *a, **k):
+        if aplicada:
+            real_alias(self, *a, **k)
+        tras_fallo.append(True)
+        raise MlflowException("fallo inyectado: la solicitud del alias venció sin respuesta")
 
-    assert alias_actual(uri, nombre_modelo) == "1"
+    def consultar(self, *a, **k):
+        if tras_fallo and not consulta:
+            raise ConnectionError("fallo inyectado en la consulta del alias")
+        return real_consulta(self, *a, **k)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(MlflowClient, "set_registered_model_alias", asignar)
+        mp.setattr(MlflowClient, "get_model_version_by_alias", consultar)
+        if not consulta:
+            with pytest.raises(reg.PromocionIndeterminada, match="no está garantizado"):
+                registrar(bd, uri, nombre_modelo, promover="siempre")
+        elif aplicada:
+            r = registrar(bd, uri, nombre_modelo, promover="siempre")
+        else:
+            with pytest.raises(MlflowException, match="fallo inyectado"):
+                registrar(bd, uri, nombre_modelo, promover="siempre")
+
     t = tags_version(uri, nombre_modelo, "2")
-    assert t["estado"] == "valido" and "promovido_por" not in t and "alias_anterior" not in t
     run = _ejecuciones(uri)[0]
-    assert run.info.status == "FINISHED" and run.data.tags["promovido"] == "false"
+    assert t["estado"] == "valido" and run.info.status == "FINISHED"       # nunca alias en una inválida
+    assert alias_actual(uri, nombre_modelo) == ("2" if aplicada else "1")
+    if not consulta:          # indeterminada: se conservan las marcas (pueden ser ciertas) y se señala
+        assert t["promocion"] == "indeterminada" and t["promovido_por"] == "manual"
+        assert run.data.tags["promovido"] == "indeterminado"
+    elif aplicada:            # la promoción sí se realizó: se reconoce
+        assert r.promovido and r.alias_anterior == "1"
+        assert t["promovido_por"] == "manual" and t["alias_anterior"] == "1" and "promocion" not in t
+        assert run.data.tags["promovido"] == "true"
+    else:                     # candidato válido sin promover
+        assert "promovido_por" not in t and "alias_anterior" not in t and "promocion" not in t
+        assert run.data.tags["promovido"] == "false"
 
 
 def test_la_asignacion_del_alias_es_la_ultima_escritura(bd, servidor_mlflow, nombre_modelo, monkeypatch):

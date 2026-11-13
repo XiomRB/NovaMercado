@@ -19,10 +19,15 @@ Flujo (el alias se mueve **solo al final** y solo con un candidato válido):
 
 Cualquier excepción antes del paso 9: la versión (si existe) queda
 ``estado=invalido``, la ejecución termina ``FAILED`` y el alias no se toca. Si
-falla la propia asignación del alias (una sola llamada al Registry), el alias
-anterior sigue igual, la versión queda válida pero no promovida (se retiran
-``promovido_por``/``alias_anterior`` y la ejecución queda ``promovido=false``)
-y la excepción se propaga.
+la propia asignación del alias lanza una excepción, el servidor pudo haberla
+aplicado igual (respuesta perdida, timeout), así que se **consulta** el alias:
+
+* apunta a la nueva versión → la promoción se realizó (se conserva todo);
+* apunta a otra versión o a ninguna → candidato válido sin promover (se retiran
+  ``promovido_por``/``alias_anterior``, ``promovido=false``) y se propaga el error;
+* la consulta también falla → ``PromocionIndeterminada``: no se afirma nada
+  sobre el alias (tags ``promocion=indeterminada``). La versión es válida, así
+  que en ningún caso el alias queda en una versión inválida.
 """
 
 from __future__ import annotations
@@ -81,6 +86,20 @@ def hilos_fijos(n: int):
     return threadpool_limits(limits=int(n), user_api="openmp")
 
 
+class PromocionIndeterminada(RuntimeError):
+    """Falló la asignación del alias y tampoco se pudo consultar su valor: no se sabe
+    si apunta a la nueva versión (válida) o sigue en la anterior."""
+
+    def __init__(self, nombre: str, alias: str, version: str, anterior: str | None, causa: BaseException):
+        self.nombre, self.alias, self.version, self.anterior = nombre, alias, version, anterior
+        super().__init__(
+            f"Promoción en estado indeterminado: la asignación del alias '{alias}' de '{nombre}' a la "
+            f"versión {version} falló ({type(causa).__name__}) y no se pudo consultar el alias después. "
+            f"Puede apuntar a la versión {version} (válida) o seguir en "
+            f"{'la versión ' + anterior if anterior else 'ninguna versión'}; no está garantizado. "
+            f"Consulte el alias en MLflow antes de reintentar.")
+
+
 @dataclass
 class ResultadoRegistro:
     run_id: str
@@ -118,6 +137,20 @@ def entrenar_definitivo(datos: DatosEntrenamiento, cfg: ConfigEntrenamiento, nom
     p = Pronosticador.entrenar(datos.ventas, datos.promociones, datos.tiendas, datos.feriados, datos.costos,
                                datos.familia_ids, datos.corte, cfg)
     return p, empaquetar(p, nombre)
+
+
+def resolver_asignacion_alias(cliente, nombre: str, alias: str, version: str) -> tuple[str, str | None]:
+    """Tras una excepción de ``set_registered_model_alias``, consulta el alias una vez.
+
+    Devuelve ``("aplicada", version)``, ``("no_aplicada", observado)`` (otra versión o
+    ``None``) o ``("indeterminada", None)`` si la consulta también falla.
+    """
+    try:
+        observado = _alias_actual(cliente, nombre, alias)
+    except Exception as exc:  # noqa: BLE001 - cualquier fallo de la consulta deja el resultado abierto
+        logger.error("no se pudo consultar el alias %s de %s tras el fallo: %s", alias, nombre, type(exc).__name__)
+        return "indeterminada", None
+    return ("aplicada", observado) if observado == str(version) else ("no_aplicada", observado)
 
 
 def _alias_actual(cliente, nombre: str, alias: str) -> str | None:
@@ -264,10 +297,35 @@ def entrenar_y_registrar(motor, *, tracking_uri: str, nombre: str, alias: str, p
     if promover_ahora:
         try:
             cliente.set_registered_model_alias(nombre, alias, version)
-        except BaseException:
-            _deshacer_marcas_de_promocion(cliente, nombre, version, run_id)
-            raise
+        except BaseException as exc:
+            # El servidor pudo aplicar el cambio aunque el cliente reciba un error
+            # (respuesta perdida, timeout): se consulta antes de deshacer nada.
+            resultado, observado = resolver_asignacion_alias(cliente, nombre, alias, version)
+            if resultado == "aplicada":
+                logger.warning("la asignación del alias %s lanzó %s, pero el alias ya apunta a la versión %s: "
+                               "la promoción se realizó", alias, type(exc).__name__, version)
+                if not isinstance(exc, Exception):         # p. ej. KeyboardInterrupt: se respeta
+                    raise
+            elif resultado == "no_aplicada":
+                logger.error("la asignación del alias %s falló; sigue en %s; la versión %s queda válida sin "
+                             "promover", alias, observado or "ninguna versión", version)
+                _deshacer_marcas_de_promocion(cliente, nombre, version, run_id)
+                raise
+            else:
+                _marcar_promocion_indeterminada(cliente, nombre, version, run_id)
+                raise PromocionIndeterminada(nombre, alias, version, anterior, exc) from exc
     return ResultadoRegistro(run_id, version, valido, motivo, promover_ahora, anterior, crit.resumen)
+
+
+def _marcar_promocion_indeterminada(cliente, nombre: str, version: str, run_id: str) -> None:
+    """Mejor esfuerzo: MLflow puede seguir sin responder. Se conservan las marcas de
+    promoción (pueden ser ciertas) y se agrega ``promocion=indeterminada``."""
+    for escribir in (lambda: cliente.set_model_version_tag(nombre, version, "promocion", "indeterminada"),
+                     lambda: cliente.set_tag(run_id, "promovido", "indeterminado")):
+        try:
+            escribir()
+        except Exception:  # noqa: BLE001
+            logger.error("no se pudo marcar la promoción indeterminada de la versión %s", version)
 
 
 def _deshacer_marcas_de_promocion(cliente, nombre: str, version: str, run_id: str) -> None:
