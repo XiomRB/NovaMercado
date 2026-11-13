@@ -45,14 +45,18 @@ def ejecutar_backtest(datos: DatosBase, cortes: list, horizonte: int = 28,
                       modelos: tuple[str, ...] = ("baseline_dow4", "hgb_directo", "hgb_relativo"),
                       estrategias: tuple[str, ...] = tuple(ESTRATEGIAS),
                       cuantil_directo: bool = True,
-                      config: ConfigEntrenamiento | None = None) -> ResultadoBacktest:
+                      config: ConfigEntrenamiento | None = None,
+                      promociones: pd.DataFrame | None = None) -> ResultadoBacktest:
+    """``promociones``: si se indica, una por clave (``consolidar_promociones``); si no,
+    se toman de ``datos.historico`` (como en la etapa 2)."""
     config = config or ConfigEntrenamiento()
     cal = Calendario(datos.feriados)
     familias = list(datos.familias["familia_id"])
     t = taus(datos.costos)
     # Las variables de cada fila solo usan ventas anteriores a su fecha, así que se
     # pueden calcular una vez para todo el histórico (equivalencia probada en tests).
-    X, y, _ = preparar(datos.historico, datos.historico, datos.tiendas, cal, familias)
+    X, y, _ = preparar(datos.historico, promociones if promociones is not None else datos.historico,
+                       datos.tiendas, cal, familias)
 
     filas, infos = [], []
     for corte in map(pd.Timestamp, cortes):
