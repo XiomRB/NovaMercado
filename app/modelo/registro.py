@@ -12,10 +12,17 @@ Flujo (el alias se mueve **solo al final** y solo con un candidato válido):
 6. T4b: descargar ``runs:/<run>/<ruta_artefacto>``; SHA, formato, humo.
 7. T4a: descargar la copia de datos de MLflow, verificarla y repetir los cortes;
    métricas idénticas (enteros) o dentro de la tolerancia (reales).
-8. ``estado=valido|invalido`` y, si es válido, alias según ``promover``.
+8. ``estado=valido|invalido``, tags de la versión y de la ejecución, métricas
+   finales y ``criterio.json``; la ejecución termina ``FINISHED``.
+9. Solo entonces, si es válido y ``promover`` lo permite, se asigna el alias:
+   es la **última** operación (después no se escribe nada en MLflow).
 
-Cualquier excepción: la versión (si existe) queda ``estado=invalido``, la
-ejecución termina ``FAILED`` y el alias no se toca.
+Cualquier excepción antes del paso 9: la versión (si existe) queda
+``estado=invalido``, la ejecución termina ``FAILED`` y el alias no se toca. Si
+falla la propia asignación del alias (una sola llamada al Registry), el alias
+anterior sigue igual, la versión queda válida pero no promovida (se retiran
+``promovido_por``/``alias_anterior`` y la ejecución queda ``promovido=false``)
+y la excepción se propaga.
 """
 
 from __future__ import annotations
@@ -159,89 +166,122 @@ def entrenar_y_registrar(motor, *, tracking_uri: str, nombre: str, alias: str, p
         config, evaluacion = config_desde_manifiesto(manifiesto_leido)
 
         version: str | None = None
-        with mlflow.start_run(tags={"origen": "manual", "git_commit": git_commit, "git_limpio": "true",
-                                    "huella_datos": huella, "modelo": config.modelo,
-                                    "estrategia": config.estrategia}) as run:
-            run_id = run.info.run_id
+        run = mlflow.start_run(tags={"origen": "manual", "git_commit": git_commit, "git_limpio": "true",
+                                     "huella_datos": huella, "modelo": config.modelo,
+                                     "estrategia": config.estrategia})
+        run_id = run.info.run_id
+        try:
+            mlflow.log_params({**{f"config.{k}": v for k, v in asdict(config).items() if k != "params_hgb"},
+                               **{f"hgb.{k}": v for k, v in config.params_hgb.items()},
+                               **{f"evaluacion.{k}": v for k, v in evaluacion.como_dict().items()},
+                               "corte": manifiesto["corte"], "hilos_entrenamiento": hilos})
+            mlflow.log_artifacts(str(tmp / RUTA_DATOS), RUTA_DATOS)
+
+            t = time.monotonic()
+            with hilos_fijos(hilos):
+                ev = evaluar(datos, evaluacion, config)
+            crit = evaluar_criterio(ev, evaluacion)
+            mlflow.log_metric("segundos_backtest", time.monotonic() - t)
+            for k, v in crit.resumen.items():
+                mlflow.log_metric(k, float(v))
+            mlflow.log_dict({"condiciones": crit.condiciones, "motivo": crit.motivo,
+                             "cortes": [c.strftime("%Y-%m-%d") for c in ev.cortes]}, "criterio.json")
+            if not crit.condiciones.get("D1", False):
+                mlflow.set_tags({"valido": "false", "motivo": crit.motivo, "promovido": "false"})
+                mlflow.end_run(status="FINISHED")
+                return ResultadoRegistro(run_id, None, False, crit.motivo, False, None, crit.resumen)
+            _log_metricas_evaluacion(mlflow, ev)
+            tabla = ev.tabla_csv()
+            (tmp / ARCHIVO_BACKTEST).write_bytes(tabla)
+            mlflow.log_artifact(str(tmp / ARCHIVO_BACKTEST), RUTA_BACKTEST)
+            sha_backtest = sha256(tabla)
+
+            with hilos_fijos(hilos):
+                p, art = entrenar_definitivo(datos, config, nombre)
+            ruta_local = tmp / NOMBRE_ARCHIVO
+            ruta_local.write_bytes(art.artefacto)
+            sha_art = sha256_bytes(art.artefacto)
+
+            from ml.mlflow_modelo import ModeloNovaMercado
+            mlflow.pyfunc.log_model(RUTA_MODELO, python_model=ModeloNovaMercado(),
+                                    artifacts={"modelo": str(ruta_local)},
+                                    code_paths=[str(RAIZ / "ml")], pip_requirements=requisitos_pip())
+            ruta_artefacto = f"{RUTA_MODELO}/artifacts/{NOMBRE_ARCHIVO}"
+            mv = mlflow.register_model(f"runs:/{run_id}/{RUTA_MODELO}", nombre)
+            version = str(mv.version)
+            for k, v in {"estado": "pendiente", "sha256_artefacto": sha_art, "ruta_artefacto": ruta_artefacto,
+                         "huella_datos": huella, "sha256_backtest": sha_backtest,
+                         "corte": manifiesto["corte"], "git_commit": git_commit}.items():
+                cliente.set_model_version_tag(nombre, version, k, v)
+            mlflow.set_tags({"version_registrada": version, "sha256_artefacto": sha_art,
+                             "sha256_backtest": sha_backtest})
+
+            t4b = verificar_t4b(tracking_uri, run_id, ruta_artefacto, sha_art)
+            t = time.monotonic()
+            with hilos_fijos(hilos):
+                t4a = verificar_t4a(tracking_uri, run_id, huella, sha_backtest, evaluacion, config)
+            mlflow.log_metric("segundos_t4a", time.monotonic() - t)
+            crit.condiciones["T4a"], crit.condiciones["T4b"] = not t4a, not t4b
+            fallas = ([f"T4b: {t4b}"] if t4b else []) + ([f"T4a: {t4a[0]}"] if t4a else [])
+            valido = crit.valido and not fallas
+            motivo = crit.motivo if not fallas else "; ".join(fallas)
+            cliente.set_model_version_tag(nombre, version, "estado", "valido" if valido else "invalido")
+            cliente.set_model_version_tag(nombre, version, "motivo", motivo)
+
+            anterior = _alias_actual(cliente, nombre, alias)
+            promover_ahora = valido and (promover == "siempre" or (promover == "si_no_hay" and anterior is None))
+            if promover_ahora:
+                cliente.set_model_version_tag(nombre, version, "promovido_por",
+                                              "manual" if promover == "siempre" else "si_no_hay")
+                if anterior is not None:
+                    cliente.set_model_version_tag(nombre, version, "alias_anterior", anterior)
+            mlflow.log_metric("segundos_total", time.monotonic() - t0)
+            mlflow.log_dict({"condiciones": crit.condiciones, "motivo": motivo}, "criterio.json")
+            mlflow.set_tags({"valido": str(valido).lower(), "motivo": motivo,
+                             "promovido": str(promover_ahora).lower()})
+            mlflow.end_run(status="FINISHED")
+        except BaseException as exc:
+            if version is not None:
+                try:
+                    cliente.set_model_version_tag(nombre, version, "estado", "invalido")
+                    cliente.set_model_version_tag(nombre, version, "motivo", f"fallo: {type(exc).__name__}")
+                except Exception:  # noqa: BLE001 - se informa el error original
+                    logger.error("no se pudo marcar la versión %s como inválida", version)
+            # Por run_id (no por la ejecución activa): si el fallo ocurrió al cerrarla,
+            # `mlflow.set_tag` abriría una ejecución nueva.
             try:
-                mlflow.log_params({**{f"config.{k}": v for k, v in asdict(config).items() if k != "params_hgb"},
-                                   **{f"hgb.{k}": v for k, v in config.params_hgb.items()},
-                                   **{f"evaluacion.{k}": v for k, v in evaluacion.como_dict().items()},
-                                   "corte": manifiesto["corte"], "hilos_entrenamiento": hilos})
-                mlflow.log_artifacts(str(tmp / RUTA_DATOS), RUTA_DATOS)
-
-                t = time.monotonic()
-                with hilos_fijos(hilos):
-                    ev = evaluar(datos, evaluacion, config)
-                crit = evaluar_criterio(ev, evaluacion)
-                mlflow.log_metric("segundos_backtest", time.monotonic() - t)
-                for k, v in crit.resumen.items():
-                    mlflow.log_metric(k, float(v))
-                mlflow.log_dict({"condiciones": crit.condiciones, "motivo": crit.motivo,
-                                 "cortes": [c.strftime("%Y-%m-%d") for c in ev.cortes]}, "criterio.json")
-                if not crit.condiciones.get("D1", False):
-                    mlflow.set_tags({"valido": "false", "motivo": crit.motivo})
-                    return ResultadoRegistro(run_id, None, False, crit.motivo, False, None, crit.resumen)
-                _log_metricas_evaluacion(mlflow, ev)
-                tabla = ev.tabla_csv()
-                (tmp / ARCHIVO_BACKTEST).write_bytes(tabla)
-                mlflow.log_artifact(str(tmp / ARCHIVO_BACKTEST), RUTA_BACKTEST)
-                sha_backtest = sha256(tabla)
-
-                with hilos_fijos(hilos):
-                    p, art = entrenar_definitivo(datos, config, nombre)
-                ruta_local = tmp / NOMBRE_ARCHIVO
-                ruta_local.write_bytes(art.artefacto)
-                sha_art = sha256_bytes(art.artefacto)
-
-                from ml.mlflow_modelo import ModeloNovaMercado
-                mlflow.pyfunc.log_model(RUTA_MODELO, python_model=ModeloNovaMercado(),
-                                        artifacts={"modelo": str(ruta_local)},
-                                        code_paths=[str(RAIZ / "ml")], pip_requirements=requisitos_pip())
-                ruta_artefacto = f"{RUTA_MODELO}/artifacts/{NOMBRE_ARCHIVO}"
-                mv = mlflow.register_model(f"runs:/{run_id}/{RUTA_MODELO}", nombre)
-                version = str(mv.version)
-                for k, v in {"estado": "pendiente", "sha256_artefacto": sha_art, "ruta_artefacto": ruta_artefacto,
-                             "huella_datos": huella, "sha256_backtest": sha_backtest,
-                             "corte": manifiesto["corte"], "git_commit": git_commit}.items():
-                    cliente.set_model_version_tag(nombre, version, k, v)
-                mlflow.set_tags({"version_registrada": version, "sha256_artefacto": sha_art,
-                                 "sha256_backtest": sha_backtest})
-
-                t4b = verificar_t4b(tracking_uri, run_id, ruta_artefacto, sha_art)
-                t = time.monotonic()
-                with hilos_fijos(hilos):
-                    t4a = verificar_t4a(tracking_uri, run_id, huella, sha_backtest, evaluacion, config)
-                mlflow.log_metric("segundos_t4a", time.monotonic() - t)
-                crit.condiciones["T4a"], crit.condiciones["T4b"] = not t4a, not t4b
-                fallas = ([f"T4b: {t4b}"] if t4b else []) + ([f"T4a: {t4a[0]}"] if t4a else [])
-                valido = crit.valido and not fallas
-                motivo = crit.motivo if not fallas else "; ".join(fallas)
-                cliente.set_model_version_tag(nombre, version, "estado", "valido" if valido else "invalido")
-                cliente.set_model_version_tag(nombre, version, "motivo", motivo)
-
-                promovido, anterior = False, _alias_actual(cliente, nombre, alias)
-                if valido and (promover == "siempre" or (promover == "si_no_hay" and anterior is None)):
-                    cliente.set_model_version_tag(nombre, version, "promovido_por",
-                                                  "manual" if promover == "siempre" else "si_no_hay")
-                    if anterior is not None:
-                        cliente.set_model_version_tag(nombre, version, "alias_anterior", anterior)
-                    cliente.set_registered_model_alias(nombre, alias, version)    # último paso
-                    promovido = True
-                mlflow.log_metric("segundos_total", time.monotonic() - t0)
-                mlflow.log_dict({"condiciones": crit.condiciones, "motivo": motivo}, "criterio.json")
-                mlflow.set_tags({"valido": str(valido).lower(), "motivo": motivo, "promovido": str(promovido).lower()})
-                return ResultadoRegistro(run_id, version, valido, motivo, promovido, anterior, crit.resumen)
-            except BaseException as exc:
-                if version is not None:
-                    try:
-                        cliente.set_model_version_tag(nombre, version, "estado", "invalido")
-                        cliente.set_model_version_tag(nombre, version, "motivo", f"fallo: {type(exc).__name__}")
-                    except Exception:  # noqa: BLE001 - se informa el error original
-                        logger.error("no se pudo marcar la versión %s como inválida", version)
-                mlflow.set_tag("valido", "false")
+                cliente.set_tag(run_id, "valido", "false")
+            except Exception:  # noqa: BLE001 - se informa el error original
+                logger.error("no se pudo marcar la ejecución %s como inválida", run_id)
+            if mlflow.active_run() is not None:
                 mlflow.end_run(status="FAILED")
-                raise
+            else:
+                cliente.set_terminated(run_id, status="FAILED")
+            raise
+
+    # Promoción: la asignación del alias es la ÚLTIMA operación. Todo lo anterior
+    # (tags, métricas, criterio y cierre de la ejecución) ya terminó sin errores.
+    if promover_ahora:
+        try:
+            cliente.set_registered_model_alias(nombre, alias, version)
+        except BaseException:
+            _deshacer_marcas_de_promocion(cliente, nombre, version, run_id)
+            raise
+    return ResultadoRegistro(run_id, version, valido, motivo, promover_ahora, anterior, crit.resumen)
+
+
+def _deshacer_marcas_de_promocion(cliente, nombre: str, version: str, run_id: str) -> None:
+    """La asignación del alias falló: el alias anterior no cambió; se retiran las marcas
+    escritas antes (mejor esfuerzo, sin ocultar el error original)."""
+    for tag in ("promovido_por", "alias_anterior"):
+        try:
+            cliente.delete_model_version_tag(nombre, version, tag)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        cliente.set_tag(run_id, "promovido", "false")
+    except Exception:  # noqa: BLE001
+        logger.error("la asignación del alias falló y no se pudo marcar la ejecución %s", run_id)
 
 
 def verificar_t4b(tracking_uri: str, run_id: str, ruta_artefacto: str, sha: str) -> str | None:

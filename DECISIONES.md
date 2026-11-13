@@ -643,8 +643,19 @@ verifica **antes** de `joblib.load`. El envoltorio `pyfunc`
   / `nunca`. El alias **solo** se mueve con un candidato válido y como último
   paso; nunca se omiten validaciones. Una versión en proceso queda
   `estado=pendiente`; el proveedor solo acepta `estado=valido`.
-* Fallos: la versión queda `estado=invalido`, la ejecución `FAILED` y el alias
-  intacto. Con datos insuficientes (D1) no se registra versión.
+* **Orden de la promoción:** primero todos los tags de la versión (`estado`,
+  `motivo`, `promovido_por`, `alias_anterior`), las métricas finales,
+  `criterio.json`, los tags de la ejecución y su cierre `FINISHED`; la
+  asignación del alias es la **última** operación y después no se escribe nada
+  en MLflow (corrección de la revisión del PR #5: antes se registraban métricas
+  y tags después del alias, y un fallo ahí dejaba el alias en una versión
+  marcada `invalido`).
+* Fallos antes de la asignación: la versión queda `estado=invalido`, la
+  ejecución `FAILED` y el alias intacto. Si falla la propia asignación (una
+  sola llamada al Registry), el alias anterior sigue igual; la versión queda
+  `valido` sin promover (se retiran `promovido_por`/`alias_anterior`, la
+  ejecución queda `promovido=false`) y el comando termina con error. Con datos
+  insuficientes (D1) no se registra versión.
 
 ### Copia inmutable de datos y reproducción (M12)
 
@@ -710,6 +721,9 @@ en un proceso sin estado global.
   `respaldo()` (caché); `actualizado()` falso si MLflow responde pero el alias
   no ofrece una versión utilizable → `/health` `degradado` con motivo "no se
   pudo actualizar el modelo vigente" (M9), sin dejar de predecir.
+* Componentes requeridos (M10): `.env.example` **no** define
+  `COMPONENTES_REQUERIDOS`, porque definirla anula la selección automática:
+  con `MODELO_ORIGEN=mlflow` se requiere `mlflow`; con `archivo`, no.
 * Caché (`MODELO_CACHE_DIR/<versión>/modelo.joblib` + `metadatos.json`, 3
   versiones, escritura atómica) validada en cascada sin MLflow: metadatos →
   SHA recalculado → formato y bibliotecas → humo; primera válida o 503.
@@ -734,10 +748,12 @@ nada en MLflow. No hay opción para omitirlo.
   (determinista, alteraciones), criterio C1–C3/D1/T2, tolerancias, Git (13
   casos, incluido el comando real en un repositorio sucio), dos procesos
   independientes con el mismo SHA, proveedor y gestor con cliente simulado.
-* `tests/integracion/test_mlflow_registro.py` (18) y `test_mlflow_api.py` (8)
+* `tests/integracion/test_mlflow_registro.py` (26) y `test_mlflow_api.py` (8)
   contra un **servidor MLflow real** y PostgreSQL: registro válido y alias;
   `si_no_hay`, `siempre` y `nunca`; candidato que no supera el costo (con
   `si_no_hay` y `siempre`) y datos insuficientes; fallo inyectado en 5 pasos;
+  fallo inyectado en 6 operaciones previas a la promoción y en la propia
+  asignación (alias anterior intacto); el alias es la última escritura;
   reproducción `identica` tras modificar la base; copia y backtest alterados;
   T4b; trazabilidad; `/modelo` y predicción con la versión real; cambio de alias
   detectado en < 30 s con el intervalo por defecto; MLflow detenido y

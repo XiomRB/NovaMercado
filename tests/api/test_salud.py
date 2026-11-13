@@ -2,6 +2,7 @@
 
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -140,6 +141,32 @@ def test_componentes_requeridos(monkeypatch):
     monkeypatch.setenv("COMPONENTES_REQUERIDOS", "base_datos,redis")
     with pytest.raises(ConfiguracionInvalida, match="redis"):
         componentes_requeridos()
+
+
+def _variables_env_example() -> dict[str, str]:
+    raiz = Path(__file__).resolve().parents[2]
+    variables = {}
+    for linea in (raiz / ".env.example").read_text(encoding="utf-8").splitlines():
+        linea = linea.strip()
+        if linea and not linea.startswith("#") and "=" in linea:
+            clave, valor = linea.split("=", 1)
+            variables[clave.strip()] = valor.strip()
+    return variables
+
+
+@pytest.mark.parametrize("origen, requeridos", [
+    ("mlflow", ("api", "base_datos", "modelo", "mlflow")),
+    ("archivo", ("api", "base_datos", "modelo")),
+])
+def test_env_example_deja_que_modelo_origen_decida_si_mlflow_es_requerido(monkeypatch, origen, requeridos):
+    variables = _variables_env_example()
+    assert "COMPONENTES_REQUERIDOS" not in variables       # definirla anularía la selección automática
+    assert variables["MODELO_ORIGEN"] == "mlflow"
+    monkeypatch.delenv("COMPONENTES_REQUERIDOS", raising=False)
+    for clave, valor in variables.items():
+        monkeypatch.setenv(clave, valor)
+    monkeypatch.setenv("MODELO_ORIGEN", origen)
+    assert componentes_requeridos() == requeridos
 
 
 def test_modelo_desactualizado_degrada_sin_503():

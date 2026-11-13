@@ -8,6 +8,7 @@ import mlflow
 import numpy as np
 import pandas as pd
 import pytest
+from mlflow import MlflowClient
 from sqlalchemy import text
 
 import app.modelo.registro as reg
@@ -152,6 +153,109 @@ def test_fallo_en_cualquier_paso_no_mueve_el_alias(bd, servidor_mlflow, nombre_m
     for v in versiones:
         if v.version != "1":
             assert dict(v.tags).get("estado") != "valido"
+
+
+# ------------------------------------------- alias como última operación de la promoción
+def _ejecuciones(uri):
+    c = cliente(uri)
+    return c.search_runs([c.get_experiment_by_name(reg.EXPERIMENTO).experiment_id], order_by=["start_time DESC"])
+
+
+def _inyectar_antes_de_promover(mp, paso):
+    """Falla en una de las operaciones que, con un candidato válido, ocurren después de
+    validarlo y antes de asignar el alias."""
+    def falla():
+        raise RuntimeError(f"fallo inyectado en {paso}")
+
+    if paso in ("tag_estado_valido", "tag_promovido_por"):
+        real = MlflowClient.set_model_version_tag
+        clave, valor = ("estado", "valido") if paso == "tag_estado_valido" else ("promovido_por", None)
+
+        def tag(self, name, version, key, value):
+            if key == clave and (valor is None or value == valor):
+                falla()
+            return real(self, name, version, key, value)
+        mp.setattr(MlflowClient, "set_model_version_tag", tag)
+    elif paso == "metrica_final":
+        real_m = mlflow.log_metric
+        mp.setattr(mlflow, "log_metric", lambda k, *a, **kw: falla() if k == "segundos_total"
+                            else real_m(k, *a, **kw))
+    elif paso == "criterio_final":
+        real_d = mlflow.log_dict
+        mp.setattr(mlflow, "log_dict", lambda d, f, *a, **kw: falla() if "cortes" not in d
+                            else real_d(d, f, *a, **kw))
+    elif paso == "tags_finales":
+        real_t = mlflow.set_tags
+        mp.setattr(mlflow, "set_tags", lambda t, *a, **kw: falla() if "promovido" in t
+                            else real_t(t, *a, **kw))
+    elif paso == "cerrar_ejecucion":
+        real_e = mlflow.end_run
+        mp.setattr(mlflow, "end_run", lambda status="FINISHED": falla() if status == "FINISHED"
+                            else real_e(status))
+
+
+@pytest.mark.parametrize("paso", ["tag_estado_valido", "tag_promovido_por", "metrica_final",
+                                  "criterio_final", "tags_finales", "cerrar_ejecucion"])
+def test_fallo_previo_a_la_promocion_deja_el_alias_anterior(bd, servidor_mlflow, nombre_modelo,
+                                                            monkeypatch, paso):
+    uri = servidor_mlflow.uri
+    registrar(bd, uri, nombre_modelo)                                       # v1 vigente
+    antes = len(_ejecuciones(uri))
+    with monkeypatch.context() as mp, pytest.raises(RuntimeError, match="fallo inyectado"):
+        _inyectar_antes_de_promover(mp, paso)
+        registrar(bd, uri, nombre_modelo, promover="siempre")
+
+    assert alias_actual(uri, nombre_modelo) == "1"
+    assert tags_version(uri, nombre_modelo, "2")["estado"] == "invalido"
+    assert tags_version(uri, nombre_modelo, "1")["estado"] == "valido"
+    ejecuciones = _ejecuciones(uri)
+    assert len(ejecuciones) == antes + 1                    # el manejo del error no abre otra ejecución
+    assert ejecuciones[0].info.status == "FAILED" and ejecuciones[0].data.tags["valido"] == "false"
+    assert mlflow.active_run() is None
+
+
+def test_fallo_al_asignar_el_alias_lo_deja_intacto(bd, servidor_mlflow, nombre_modelo, monkeypatch):
+    uri = servidor_mlflow.uri
+    registrar(bd, uri, nombre_modelo)                                       # v1 vigente
+
+    def falla(*a, **k):
+        raise RuntimeError("fallo inyectado al asignar el alias")
+    with monkeypatch.context() as mp, pytest.raises(RuntimeError, match="fallo inyectado"):
+        mp.setattr(MlflowClient, "set_registered_model_alias", falla)
+        registrar(bd, uri, nombre_modelo, promover="siempre")
+
+    assert alias_actual(uri, nombre_modelo) == "1"
+    t = tags_version(uri, nombre_modelo, "2")
+    assert t["estado"] == "valido" and "promovido_por" not in t and "alias_anterior" not in t
+    run = _ejecuciones(uri)[0]
+    assert run.info.status == "FINISHED" and run.data.tags["promovido"] == "false"
+
+
+def test_la_asignacion_del_alias_es_la_ultima_escritura(bd, servidor_mlflow, nombre_modelo, monkeypatch):
+    uri = servidor_mlflow.uri
+    registrar(bd, uri, nombre_modelo)                                       # v1 vigente
+    llamadas = []
+
+    def espiar(mp, dueno, metodo):
+        real = getattr(dueno, metodo)
+
+        def envoltura(*a, **k):
+            llamadas.append(metodo)
+            return real(*a, **k)
+        mp.setattr(dueno, metodo, envoltura)
+
+    with monkeypatch.context() as mp:
+        for m in ("set_model_version_tag", "set_registered_model_alias", "set_tag", "set_terminated",
+                  "log_metric", "log_dict", "delete_model_version_tag"):
+            espiar(mp, MlflowClient, m)
+        for m in ("log_metric", "log_dict", "set_tags", "set_tag", "end_run", "log_artifact", "log_artifacts"):
+            espiar(mp, mlflow, m)
+        r = registrar(bd, uri, nombre_modelo, promover="siempre")
+
+    assert r.promovido and alias_actual(uri, nombre_modelo) == "2"
+    assert llamadas[-1] == "set_registered_model_alias" and llamadas.count("set_registered_model_alias") == 1
+    assert "end_run" in llamadas and llamadas.index("end_run") < llamadas.index("set_registered_model_alias")
+    assert _ejecuciones(uri)[0].info.status == "FINISHED"
 
 
 # ----------------------------------------------------------- T4a, T4b y reproducción

@@ -137,8 +137,11 @@ tests/fixtures/ catálogo y ejemplos sintéticos: las pruebas nunca leen raw/
 * `modelo.joblib` es la **única** referencia del modelo: su SHA-256 (tag
   `sha256_artefacto`) se verifica antes de deserializar al descargar, al leer la
   caché y en T4b. No validar carpetas ni otros archivos.
-* El alias `vigente` solo se mueve en `app/modelo/registro.py`, como último paso
-  y con un candidato válido (T1–T4b, D1, C1–C3). Ningún modo omite validaciones.
+* El alias `vigente` solo se mueve en `app/modelo/registro.py`, como **última
+  operación** (después de tags, métricas, `criterio.json` y el cierre de la
+  ejecución; nada se escribe después) y con un candidato válido (T1–T4b, D1,
+  C1–C3). Ningún modo omite validaciones.
+* No definir `COMPONENTES_REQUERIDOS` en `.env.example`: se deriva de `MODELO_ORIGEN`.
 * El entrenamiento y la evaluación leen la **copia releída** (datos y
   configuración del manifiesto) y fijan los hilos (`hilos_fijos`, 1 por
   defecto): sin eso los bytes de `modelo.joblib` no se reproducen.
