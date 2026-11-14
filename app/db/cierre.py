@@ -150,6 +150,16 @@ EXISTS (SELECT 1 FROM reclamaciones_reentrenamiento rc
         WHERE rc.id = %(id)s)
 """
 
+# Condiciones de la recuperación (plan v4 §1, v5): se evalúan DENTRO de la sentencia
+# condicional, con la solicitud bloqueada y el reloj de PostgreSQL.
+CONDICIONES = {
+    "cola_vencida": "NOT EXISTS (SELECT 1 FROM tareas_reentrenamiento WHERE id = %(id)s) AND clock_timestamp() >= "
+                    "(SELECT solicitado_en FROM solicitudes_reentrenamiento WHERE id = %(id)s) + interval '30 minutes'",
+    "plazo_vencido": "clock_timestamp() >= (SELECT iniciada_en FROM tareas_reentrenamiento WHERE id = %(id)s) "
+                     "+ interval '10 minutes'",
+    "con_veredicto": "EXISTS (SELECT 1 FROM veredictos_reentrenamiento WHERE id = %(id)s)",
+}
+
 # Una sola sentencia condicional: no hay resultado previo y, si es "exitoso", no hay
 # veredicto de ausencia (plan v10 §3). La versión es el vigente AL ESCRIBIR.
 SQL_INSERTAR = f"""
@@ -190,12 +200,15 @@ def _estado(conn, id_: str) -> tuple[str | None, bool, bool]:
 
 def cerrar(params: dict, id_: str, *, estado: str, motivo: str, escrito_por: str, nombre_modelo: str,
            promovido: bool | None = None, total: float = CIERRE_TOTAL_S,
-           escritura: float = CIERRE_ESCRITURA_S, poll: float = VIG_POLL_S) -> ResultadoCierre:
+           escritura: float = CIERRE_ESCRITURA_S, poll: float = VIG_POLL_S,
+           condicion: str | None = None) -> ResultadoCierre:
     """Escribe el resultado (rol nm_cierre). Nunca reintenta la escritura: tras un error
     solo verifica por id. ``promovido=None`` lo calcula de las resoluciones confirmadas
-    de la época de su reclamación."""
+    de la época de su reclamación. ``condicion`` (una de :data:`CONDICIONES`) se exige
+    en la misma sentencia, bajo el bloqueo; si no se cumple: ``no_escrito``."""
     if estado not in ("exitoso", "fallido"):
         raise ValueError(estado)
+    sql = SQL_INSERTAR if condicion is None else f"{SQL_INSERTAR}  AND ({CONDICIONES[condicion]})\n"
     inicio = time.monotonic()
     fin_total = inicio + total
     corte = Corte(escritura)
@@ -214,7 +227,7 @@ def cerrar(params: dict, id_: str, *, estado: str, motivo: str, escrito_por: str
                 cur.execute("ROLLBACK")
                 return ResultadoCierre("no_escrito", None, "la solicitud no existe")
             cur.execute("SELECT set_config('statement_timeout', %s, true)", (str(_ms(corte.restante())),))
-            cur.execute(SQL_INSERTAR, {"id": id_, "estado": estado, "promovido": promovido,
+            cur.execute(sql, {"id": id_, "estado": estado, "promovido": promovido,
                                        "motivo": motivo[:2000], "escrito_por": escrito_por,
                                        "nombre": nombre_modelo})
             n = cur.rowcount
@@ -259,6 +272,47 @@ def cerrar(params: dict, id_: str, *, estado: str, motivo: str, escrito_por: str
         return ResultadoCierre("indeterminado", None, error)
     finally:
         _cerrar_conexion(verif)
+
+
+# ------------------------------------------------------------------ inicio (t0)
+@dataclass
+class Inicio:
+    codigo: str                    # iniciada | existente | cerrada
+    t0: object | None = None
+
+
+def marcar_inicio(params: dict, id_: str, origen_si_falta: str = "airflow", espera_bloqueo: float = 30.0) -> Inicio:
+    """Primera acción del DAG (plan v4–v5 §1): con la solicitud bloqueada (``FOR UPDATE``;
+    la inserta con ``origen_si_falta`` si no existe), si ya tiene resultado o veredicto
+    → ``cerrada`` (la tarea termina ``skipped``); si ya tiene inicio → conserva el primer
+    t0; si no, inserta ``iniciada_en = clock_timestamp()`` (posterior a la espera del
+    bloqueo). Se serializa con el cierre por plazo de cola por el mismo bloqueo."""
+    conn = conectar(params, "nm-inicio", 5.0)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("BEGIN")
+            cur.execute("SELECT set_config('lock_timeout', %s, true), set_config('statement_timeout', %s, true)",
+                        (str(_ms(espera_bloqueo)), str(_ms(espera_bloqueo + 5))))
+            cur.execute("INSERT INTO solicitudes_reentrenamiento (id, origen) VALUES (%(id)s, %(o)s) "
+                        "ON CONFLICT (id) DO NOTHING", {"id": id_, "o": origen_si_falta})
+            cur.execute(SQL_BLOQUEAR, {"id": id_})
+            cur.execute("SELECT EXISTS (SELECT 1 FROM resultados_reentrenamiento WHERE id = %(id)s) "
+                        "OR EXISTS (SELECT 1 FROM veredictos_reentrenamiento WHERE id = %(id)s), "
+                        "(SELECT iniciada_en FROM tareas_reentrenamiento WHERE id = %(id)s)", {"id": id_})
+            cerrada, t0 = cur.fetchone()
+            if cerrada:
+                cur.execute("ROLLBACK")
+                return Inicio("cerrada")
+            if t0 is not None:
+                cur.execute("COMMIT")
+                return Inicio("existente", t0)
+            cur.execute("INSERT INTO tareas_reentrenamiento (id, iniciada_en) VALUES (%(id)s, clock_timestamp()) "
+                        "RETURNING iniciada_en", {"id": id_})
+            t0 = cur.fetchone()[0]
+            cur.execute("COMMIT")
+            return Inicio("iniciada", t0)
+    finally:
+        _cerrar_conexion(conn)
 
 
 # ---------------------------------------------------------------------- vigilante
