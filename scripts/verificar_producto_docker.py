@@ -218,7 +218,7 @@ def arranque_desde_cero() -> float:
         print(log("preparar")[-3000:], log("entrenamiento-inicial")[-5000:], log("api")[-3000:],
               log("airflow-scheduler")[-3000:], salud(), sep="\n")
         falla("el producto no llegó a /health ok en 10 minutos")
-    componentes = salud()[1]
+    componentes = salud()[1].get("componentes", {})
     comprobar(all(componentes.get(k) == "ok" for k in ("api", "base_datos", "modelo", "mlflow", "airflow")),
               f"/health ok con los cinco componentes: {componentes}")
     total = time.monotonic() - t
