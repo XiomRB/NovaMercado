@@ -38,7 +38,8 @@ ROL_CIERRE = "nm_cierre"
 VIG_CONEXION_S = 2.0
 VIG_LECTURA_S = 1.0
 VIG_ESPERA_BLOQUEO_S = 5.0
-VIG_FASE_BLOQUEO_S = 15.0
+VIG_INTENTOS_BLOQUEO = 3
+VIG_FASE_BLOQUEO_S = VIG_INTENTOS_BLOQUEO * VIG_ESPERA_BLOQUEO_S
 VIG_SECCION_CRITICA_OP_S = 1.0
 VIG_FUNCION_S = 2.0
 VIG_RECONEXION_S = 2.0
@@ -384,8 +385,7 @@ def vigilar(params: dict, id_: str) -> DecisionVigilante:
                 return DecisionVigilante("persistido", r, "", fases)
             if v:
                 return DecisionVigilante("ausencia", None, "veredicto ya registrado", fases)
-            fin_bloqueo = time.monotonic() + VIG_FASE_BLOQUEO_S
-            while time.monotonic() + VIG_ESPERA_BLOQUEO_S <= fin_bloqueo + 0.01:
+            for _ in range(VIG_INTENTOS_BLOQUEO):     # 3 esperas de 5 s (15 s)
                 d = _intento_bloqueo(conn, id_)
                 if d is not None:
                     fase("bloqueo")

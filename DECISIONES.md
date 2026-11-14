@@ -8,7 +8,7 @@ del Anexo tiene prioridad sobre cualquier decisión de implementación.
 | Componente | Versión fijada |
 |---|---|
 | Python | 3.11 |
-| Apache Airflow | 2.10.5 (pendiente, etapa 7) |
+| Apache Airflow | 2.10.5: imagen `apache/airflow:2.10.5-python3.11@sha256:b16e19f9…` (etapa 7) |
 | MLflow | 2.22.1 (cliente) e imagen `ghcr.io/mlflow/mlflow:v2.22.1` (servidor) |
 | PostgreSQL | imagen `postgres:16.14-alpine` |
 | Alembic | 1.14.1 (igual que las constraints de Airflow 2.10.5) |
@@ -30,6 +30,12 @@ una sola base de versiones el código compartido (`ml/`) corre igual en ambos.
 código compartido funcione con ambas; (b) `ExternalPythonOperator` con un
 entorno virtual aparte dentro de la imagen de Airflow: más aislamiento, pero más
 complejidad de imagen. Se reevaluará en la etapa 7 si aparece un conflicto.
+
+**Etapa 7 (E7-1, opción A):** se adoptó una variante de (b): la imagen de Airflow
+lleva un entorno virtual **aislado** (`include-system-site-packages = false`) con
+exactamente `requirements/api.lock.txt`, el mismo lock de la imagen de la
+aplicación. Airflow conserva sus *constraints* y su sitio de usuario; el código que
+entrena corre solo en ese entorno (§16).
 
 **Verificación:** `pip install -r requirements/dev.txt` + `pip check` sin
 conflictos en Python 3.11.18.
@@ -821,7 +827,8 @@ de MLflow) y **T3** se registra por separado de T4b.
 * `preparar` (una sola ejecución): `alembic upgrade head` y carga idempotente de
   `raw/`, montado de solo lectura. Si `raw/` falta pero los datos ya están
   cargados, se omite con un aviso; en el primer arranque es un error claro.
-* `entrenamiento-inicial` (una sola ejecución, `python -m app.modelo.arranque`):
+* `entrenamiento-inicial` (una sola ejecución, `python -m app.modelo.arranque`; desde la
+  etapa 7, a través del lanzador y el arranque verificado, §16):
   si PostgreSQL ya tiene un vigente confirmado termina sin entrenar; si no,
   entrena el primero. La API **no** lo espera y **nunca** entrena al iniciar
   (regla de la etapa 4): arranca con `/health` en 503 y carga el modelo sola.
@@ -1005,11 +1012,186 @@ de MLflow) y **T3** se registra por separado de T4b.
 * Volúmenes de una etapa 5 local: sus versiones no tienen decisión en PostgreSQL,
   así que el arranque entrena un vigente nuevo (no se adopta el alias antiguo).
 
+## 16. Reentrenamiento con Airflow (etapa 7)
+
+Diseño aprobado en la versión 12 del plan (E7-1 a E7-14, R2 y E7-6b). Reutiliza la
+concesión, el supervisor y el hijo de la etapa 6: el DAG es un origen más
+(`modo="reentrenamiento"`).
+
+### Componentes (E7-1, E7-2)
+
+* `Dockerfile.airflow`: Airflow 2.10.5 por digest + entorno virtual
+  `/opt/novamercado/venv` con el lock exacto (`--require-hashes --no-deps
+  --no-compile`), código en `/opt/novamercado` (root, solo lectura), DAG en
+  `/opt/novamercado/dags`. Comprobado al construir: procedencia, dependencias,
+  `find_spec("airflow") is None` en el entorno virtual, sin bytecode. El directorio de
+  trabajo de Airflow es `/opt/airflow`: el proyecto no es importable desde Airflow.
+* Servicios `airflow-init` (migración y usuarios: administrador `Admin` y usuario de
+  servicio de la API `Op`), `airflow-scheduler` (LocalExecutor) y `airflow-webserver`
+  (API REST con autenticación básica, puerto
+  `${AIRFLOW_DIRECCION_PUBLICACION:-127.0.0.1}:${AIRFLOW_PUERTO_HOST:-8080}`), base
+  `airflow-db` propia y volumen `airflow_logs`. `KILLED_TASK_CLEANUP_TIME=15`,
+  `SCHEDULER_HEARTBEAT_SEC=5`, `SCHEDULER_IDLE_SLEEP_TIME=1`, `PARALLELISM=8`,
+  2 workers del webserver. La URL de la base de Airflow se arma con las claves
+  escapadas (`sql_alchemy_conn_cmd`).
+* Con `ORQUESTADOR=airflow` (fijo en Compose) `COMPONENTES_REQUERIDOS` incluye
+  `airflow`; `/health` lo verifica con `/health` del webserver (base de metadatos y
+  scheduler `healthy`).
+
+### Procedencia antes de importar (E7-14)
+
+* Lanzador `docker/ejecutar` (clase A): única forma de ejecutar código del proyecto
+  desde el DAG y, por E7-14, en `entrenamiento-inicial` y `entrenar_mlflow` de la
+  imagen de la aplicación. `exec env -i` con una lista cerrada de variables (base por
+  partes, `NM_CIERRE_PASSWORD`, MLflow, hilos); nada de `PYTHONPATH`, `PYTHONHOME`
+  ni variables de Airflow. Comandos permitidos: `reentrenar`, `reconciliacion`,
+  `entrenar_mlflow`, `arranque`.
+* `docker/arranque_verificado.py` con `python -I -S -B`: (1) solo biblioteca
+  estándar: `procedencia.json` limpio y blob de Git de **todos** los archivos de
+  clase A (incluidos `__init__.py`, `dags/`, el lanzador y él mismo), archivos de más
+  rechazados en los directorios de clase A de esa imagen (`directorios_a`); (2)
+  `RECORD` y versión de `packaging` con la biblioteca estándar (lo importa la
+  verificación de dependencias), luego `app.modelo.dependencias` (lock, `RECORD`,
+  archivos sin dueño, `.pth`, bytecode, aislamiento); (3) `site.addsitedir` y
+  `runpy`. Cualquier fallo: código 2 sin haber ejecutado nada sin verificar.
+* **Hallazgo durante la implementación:** con `-S`, Python 3.11 no aplica el entorno
+  virtual (lo hace `site.venv`) y `sys.prefix` queda en la base; además `sysconfig`
+  copia los prefijos al importarse. El arranque fija `sys.prefix` desde `pyvenv.cfg`
+  **antes** de importar `sysconfig` y comprueba que `site-packages` sea el del
+  entorno virtual.
+* Ancla de confianza: el arranque y `procedencia.json` vienen en la imagen (root,
+  solo lectura). Una imagen derivada que reemplace a la vez el arranque y
+  `procedencia.json` no se detecta (mismo límite que `RECORD`, §15).
+* Costo medido: ≈ 49 s por reentrenamiento (el arranque verifica y la CLI vuelve a
+  verificar la procedencia, regla de la etapa 6 que no admite omitirla).
+
+### Solicitudes, idempotencia y estado (E7-3, E7-4, E7-11)
+
+* Migración 0003, tablas de solo inserción: `solicitudes_reentrenamiento` (id,
+  `clave_idempotencia` UNIQUE, huella, `solicitado_en`, origen), `tareas_reentrenamiento`
+  (t0), `reclamaciones_reentrenamiento` (época), `resultados_reentrenamiento` (un solo
+  resultado) y `veredictos_reentrenamiento`. Toda operación que decide el destino de
+  una solicitud empieza con `SELECT … FOR UPDATE` de su fila; los tiempos usan
+  `clock_timestamp()` del servidor.
+* `POST /admin/reentrenar`: `Idempotency-Key` opcional (≤ 128 de `[A-Za-z0-9_-]`;
+  inválida → 422; misma clave y misma huella → mismo id, reenviado si sigue pendiente,
+  202 aunque ya terminó; otra huella → 422). El id `nm-<uuid4>` se registra **antes**
+  de llamar a Airflow (si no se puede: 503 y no se llama). 200 cuenta solo con ese
+  `dag_run_id` y `dag_id`; 409 o una respuesta perdida se confirman con `GET dagRuns`;
+  404 o sin confirmación → 503 y la solicitud queda pendiente.
+* `GET /admin/reentrenar/{id}` lee solo PostgreSQL, después de ejecutar la
+  recuperación de ese id. Sin vigente al terminar, `version` es `""` (el contrato la
+  exige como texto).
+* Recuperación (hilo cada 15 s y en cada GET, rol `nm_cierre`): sin inicio y 30 min
+  en cola → `fallido`; con inicio y t0 + 10:00 → `fallido` "se interrumpió"; con
+  veredicto → `fallido`. **La condición se evalúa dentro de la sentencia condicional,
+  con la solicitud bloqueada** (no antes): si la tarea empezó entre la lectura y la
+  escritura, no se escribe.
+
+### DAG `novamercado_reentrenamiento` (E7-5, E7-7, plan v4–v12)
+
+`marcar_inicio >> reentrenar >> registrar_resultado >> vigilante`, `max_active_runs=1`
+(las solicitudes se encolan), `retries=0` salvo el vigilante.
+
+| Tarea | Qué hace |
+|---|---|
+| `marcar_inicio` (SQL) | Crea la solicitud si falta (`origen=airflow`), la bloquea; cerrada → `skipped`; con inicio conserva el primer t0; si no, t0 = `clock_timestamp()`. Usa las credenciales del producto, que el scheduler ya tiene para la CLI (**decisión de implementación**: el plan no fijaba el rol). |
+| `reentrenar` | Lanzador → `app.modelo.reentrenar`; `success` solo con resultado `exitoso` (internos 0 y 3); `skip_on_exit_code=None`; `execution_timeout` 8:30; el id llega por el entorno (`NM_EJECUCION`), nunca por la plantilla del comando. |
+| `registrar_resultado` (SQL, `all_done`, `nm_cierre`) | Si no hay resultado, `fallido` (nunca `exitoso`); 12 s (8 de escritura + verificación); registra `inicio_efectivo` como primera instrucción. |
+| `vigilante` (SQL, `all_done`, `nm_vigilante`) | Decide por lo persistido; sin resultado, veredicto de ausencia **bajo el bloqueo**; indeterminado → reintento (3, cada 30 s). DAG `success` solo con `exitoso` persistido y `reentrenar` en `success`. |
+
+El SQL de las tareas está en `dags/nm_cierre.py`, **copia idéntica** de
+`app/db/cierre.py` (prueba byte a byte; solo biblioteca estándar y psycopg2): ningún
+DAG importa el proyecto. `novamercado_reconciliacion` (cada 5 min) ejecuta
+`ejecutar_entrenamiento(modo="reconciliacion")` (sigue siendo el único que adquiere la
+concesión) sin esperar: ocupada → código 5 → `skipped`.
+
+### CLI y plazos (G1, G2)
+
+* `app/modelo/reentrenar.py`: procedencia primero; t0 leído de PostgreSQL y plazos
+  con su reloj: hijo detenido a t0+8:00 (`PlazoExcedido`, código 8), promoción solo si
+  el hijo terminó antes de t0+7:15 (si no: `exitoso`, `promovido=false`, "sin tiempo
+  para promover"; la versión queda `pendiente` y la siguiente reconciliación la
+  invalida), reconciliación final omitida después de t0+8:05, resultado escrito
+  hasta t0+8:20 (tras `SIGTERM`, hasta t0+8:43). Reclamación atómica en una
+  transacción condicionada a la concesión: con resultado, veredicto o reclamación
+  previa → código 7 sin entrenar.
+* G1: nada de entrenamiento después de t0+8:10; ningún proceso después de t0+8:45
+  (8:30 + 15 s). G2-normal (scheduler con ≤ 40 s de demora y PostgreSQL disponible):
+  resultado ≤ t0+9:38 (margen 22 s). G2-escritura ≤ t0+10:22 (recuperación de la API).
+  G2-lectura: todo GET desde t0+10:00 es terminal si PostgreSQL responde. Las cotas
+  se comprueban de forma estática con las constantes del código y de Compose.
+
+### Escritores y roles (plan v7–v12)
+
+* Escritores del resultado (rol `nm_cierre`, `application_name =
+  nm-cierre:<sha256(id)[:32]>`): la CLI, `registrar_resultado` y la recuperación de la
+  API. Una sola sentencia condicional: sin resultado previo y, si es `exitoso`, sin
+  veredicto. Nunca se reintenta la escritura: un COMMIT sin respuesta se resuelve
+  verificando por id (y si el escritor sigue vivo) hasta el presupuesto.
+* Vigilante (rol `nm_vigilante`): `lock_timeout` 5 s (`statement_timeout` 6 s solo en
+  el `FOR UPDATE`), luego 1 s por operación; hasta 3 esperas (15 s); después
+  `nm_control.nm_terminar_escritor(id)` (2 s), reconexión (2 s), verificación en
+  `pg_stat_activity` (4 s) y último intento (5 + 3 s). Peor caso 34 s, vigilante de
+  cliente global 38 s, `execution_timeout` 40 s. Nunca concluye ausencia sin el bloqueo.
+* `nm_senal` (NOLOGIN, sin miembros): `GRANT pg_signal_backend TO nm_senal WITH
+  INHERIT TRUE, SET FALSE, ADMIN FALSE`; propietario de la función SECURITY DEFINER
+  (`search_path = pg_catalog, pg_temp`, operadores calificados). `EXECUTE` solo para
+  `nm_vigilante`; esquema `nm_control` del administrador. Sin `CREATE` en `public`
+  ni `TEMPORARY` para los roles. Requiere PostgreSQL ≥ 16. Los crea
+  `python -m app.db.roles` en `preparar` (claves en `.env`).
+* **Hallazgo:** en PostgreSQL 16, para un rol sin `pg_read_all_stats`, `backend_type`
+  y `state` de otras sesiones aparecen NULL: la función filtra por base, usuario
+  `nm_cierre` y `application_name` del token (solo sesiones cliente los tienen), no
+  por `backend_type` como decía la v11.
+
+### Criterio de reemplazo R2 (E7-6, E7-6b)
+
+* Campeón: el `modelo.joblib` vigente según PostgreSQL (SHA verificado antes de
+  deserializar, formato y humo), con `corte_v` del manifiesto de su ejecución
+  (verificado con `huella_datos` y coherente con el corte del artefacto). Retador
+  efímero: misma configuración, entrenado por bloque semanal con fecha < `c_k`.
+  Ventana `max(corte_v, corte_c − 28 d) ≤ d < corte_c`, filas con venta y promoción
+  reales, una misma tabla y la misma `predecir` para ambos (prueba: predecir un
+  bloque de una vez = predecir cada fecha con historia < F).
+* `R2 = true` si `C_ret ≤ C_camp` (empate con `isclose`), `false`, `no_evaluable`
+  (< 7 días) o `no_disponible`. Modo `si_mejora`: sin vigente promueve un candidato
+  válido; vigente normal, solo con R2 `true` calculado contra **esa** decisión;
+  vigente `respaldo_baseline` (origen `arranque_respaldo` en PostgreSQL) basta C1–C3.
+  R2 no es requisito de validez (`REQUERIDOS` no cambia): una versión válida no
+  promovida queda `valido`.
+* Registro: `r2/resultados_por_bloque.csv` (tag `sha256_r2`), métricas `r2_*`, tags
+  `r2`, `r2_motivo`, `r2_decision_id`, y el campeón en el manifiesto.
+  `reproducir` recalcula R2 y lo compara (enteros exactos, costos con 1e-9).
+
+### Verificación
+
+* Sin servidores: R2 (ventana, empate, peor/mejor, no evaluable, filas no comparables,
+  sin fuga, reproducción, `si_mejora`), orquestador frente a un Airflow simulado
+  (200/409/perdida/otros), lanzador (`env -i`), arranque verificado (`__init__.py`
+  alterado, archivo y `.pth` de más: código 2 sin ejecutarse), copia idéntica del
+  SQL, presupuestos 34/38/40 s y G1/G2.
+* Integración (PostgreSQL real): catálogo de roles, herencia efectiva (con `INHERIT
+  FALSE` la función falla), `nm_vigilante` no termina backends, la función solo
+  termina al escritor del token, id de 250 caracteres, COMMIT perdido o no recibido,
+  servidor colgado, vigilante con escritor colgado / bloqueo ajeno / escritor que
+  confirma durante la espera / PostgreSQL colgado (≤ 38 s); orquestador
+  (idempotencia, plazos, condición bajo el bloqueo); ciclo y CLI con MLflow real
+  (R2, `si_mejora`, respaldo, reclamación, plazo del hijo, ventana de promoción,
+  SIGTERM, `nm_cierre`).
+* Airflow 2.10.5 real (job de CI): `DagBag`, estructura y tareas SQL contra PostgreSQL.
+* Extremo a extremo con Compose: ver `scripts/verificar_producto_docker.py`.
+
+### Limitaciones
+
+* Airflow agrega ~1,5 GB de memoria (scheduler y webserver) y su imagen ~3 GB.
+* Si el usuario de Airflow ya existe, `airflow-init` no cambia su clave: cambiar
+  `AIRFLOW_API_CLAVE` en `.env` exige borrar el usuario o el volumen `db_airflow`.
+* MLflow sin *fencing* (§15) y el ancla de confianza de la imagen (arriba).
+* G2 depende de que PostgreSQL esté disponible; sin él nadie puede escribir ni leer
+  (GET → 503) y el cierre ocurre al volver.
+
 ## Pendientes de decidir (etapas siguientes)
 
-No quedan decisiones abiertas de las etapas 0–6. Por definir en la etapa 7:
-
-* DAG y orquestador real de `/admin` (reutilizando `ejecutar_entrenamiento` y la
-  concesión), procedencia en la imagen de Airflow, reconciliación periódica,
-  criterio de reemplazo frente a un vigente de respaldo y `COMPONENTES_REQUERIDOS`
-  con `airflow`.
+No quedan decisiones abiertas de las etapas 0–7. Etapa 8: simulador de operación;
+etapa 9: documentación final y tag.

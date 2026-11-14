@@ -324,6 +324,8 @@ def test_vigilante_sin_bloqueo_no_concluye_ausencia(bd):
         d = cierre.vigilar(bd["vigilante"], id_)
         assert d.tipo == "indeterminado", d
         assert sum(d.fases.values()) <= 34 + 1, d.fases
+        # tres esperas completas de 5 s: vence lock_timeout (5 s), no statement_timeout (6 s)
+        assert 14.5 <= d.fases["bloqueo"] <= 16, d.fases
     finally:
         ajeno.close()
     assert fila(bd["motor"], "veredictos_reentrenamiento", id_) is None
@@ -373,3 +375,92 @@ def test_url_a_parametros():
     u = make_url("postgresql+psycopg2://nova:c%2Fl%40v@db:5433/nm")
     p = cierre.parametros_desde_url(u.render_as_string(hide_password=False))
     assert p == {"host": "db", "port": 5433, "user": "nova", "password": "c/l@v", "dbname": "nm"}
+
+
+# ------------------------------------------------------------------ marcar_inicio
+def solicitud_en_cola(motor, hace_min):
+    import uuid
+    id_ = f"nm-{uuid.uuid4()}"
+    with motor.begin() as c:
+        c.execute(text("INSERT INTO solicitudes_reentrenamiento (id, origen, solicitado_en) VALUES "
+                       "(:i, 'api', clock_timestamp() - make_interval(mins => :m))"), {"i": id_, "m": hace_min})
+    return id_
+
+
+def test_marcar_inicio_conserva_el_primer_t0(bd):
+    id_ = solicitud(bd["motor"])
+    a = cierre.marcar_inicio(bd["admin"], id_)
+    b = cierre.marcar_inicio(bd["admin"], id_)
+    assert (a.codigo, b.codigo) == ("iniciada", "existente") and a.t0 == b.t0
+    nuevo = cierre.marcar_inicio(bd["admin"], "manual__2026-11-13T10:00:00+00:00")
+    assert nuevo.codigo == "iniciada"
+    assert fila(bd["motor"], "solicitudes_reentrenamiento", "manual__2026-11-13T10:00:00+00:00")["origen"] == \
+        "airflow"
+
+
+def test_marcar_inicio_espera_el_bloqueo_y_t0_es_posterior(bd):
+    """Con la fila tomada por un cierre en otra transacción, marcar_inicio espera
+    (pg_blocking_pids); al confirmar el cierre no inserta inicio (cerrada). Sin cierre,
+    t0 es posterior al fin de la espera (clock_timestamp, no el inicio de la transacción)."""
+    for confirma_cierre in (True, False):
+        id_ = solicitud_en_cola(bd["motor"], 31)
+        c = psycopg2.connect(**bd["cierre"], application_name=cierre.app_cierre(id_))
+        cur = c.cursor()
+        cur.execute(cierre.SQL_BLOQUEAR, {"id": id_})
+        if confirma_cierre:
+            cur.execute(cierre.SQL_INSERTAR + "  AND (" + cierre.CONDICIONES["cola_vencida"] + ")\n",
+                        {"id": id_, "estado": "fallido", "promovido": None, "motivo": "cola", "escrito_por": "api",
+                         "nombre": MODELO})
+        resultado = {}
+        h = threading.Thread(target=lambda: resultado.update(r=cierre.marcar_inicio(bd["admin"], id_)))
+        h.start()
+        with bd["motor"].connect() as m:
+            for _ in range(50):
+                m.execute(text("SELECT pg_stat_clear_snapshot()"))      # la vista se congela en la transacción
+                bloqueados = m.execute(text("SELECT count(*) FROM pg_stat_activity WHERE application_name = "
+                                            "'nm-inicio' AND cardinality(pg_blocking_pids(pid)) > 0")).scalar()
+                if bloqueados:
+                    break
+                time.sleep(0.1)
+            assert bloqueados == 1
+            fin_espera = m.execute(text("SELECT clock_timestamp()")).scalar()
+        time.sleep(0.5)
+        c.commit()
+        h.join(10)
+        c.close()
+        r = resultado["r"]
+        if confirma_cierre:
+            assert r.codigo == "cerrada" and fila(bd["motor"], "tareas_reentrenamiento", id_) is None
+        else:
+            assert r.codigo == "iniciada" and r.t0 > fin_espera
+
+
+def test_serializacion_cola_vencida_y_marcar_inicio(bd):
+    """En paralelo, muchas veces: siempre gana uno solo; nunca hay a la vez un inicio y un
+    resultado de cola vencida."""
+    ganadores = {"inicio": 0, "cola": 0}
+    for _ in range(40):
+        id_ = solicitud_en_cola(bd["motor"], 31)
+        barrera = threading.Barrier(2)
+        out = {}
+
+        def iniciar():
+            barrera.wait()
+            out["i"] = cierre.marcar_inicio(bd["admin"], id_)
+
+        def cerrar_cola():
+            barrera.wait()
+            out["c"] = cierre.cerrar(bd["cierre"], id_, estado="fallido", motivo="cola", escrito_por="api",
+                                     nombre_modelo=MODELO, condicion="cola_vencida")
+        hs = [threading.Thread(target=iniciar), threading.Thread(target=cerrar_cola)]
+        for h in hs:
+            h.start()
+        for h in hs:
+            h.join(20)
+        tarea = fila(bd["motor"], "tareas_reentrenamiento", id_)
+        res = fila(bd["motor"], "resultados_reentrenamiento", id_)
+        assert (tarea is None) != (res is None), (out, tarea, res)
+        assert (out["i"].codigo == "iniciada") == (tarea is not None)
+        assert (out["c"].codigo == "escrito") == (res is not None)
+        ganadores["inicio" if tarea else "cola"] += 1
+    assert sum(ganadores.values()) == 40
