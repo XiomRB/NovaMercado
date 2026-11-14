@@ -33,6 +33,7 @@ pip install -r requirements/dev.txt
 ruff check .
 python -m pytest -q -m "not integracion"
 bash scripts/pruebas_integracion_local.sh      # requiere Docker
+bash scripts/verificar_simulador_docker.sh     # simulación corta; requiere Docker
 ```
 
 ## Flujo de trabajo (obligatorio)
@@ -45,6 +46,17 @@ bash scripts/pruebas_integracion_local.sh      # requiere Docker
 Versiones fijadas alineadas con las constraints de Airflow 2.10.5 / Python 3.11
 (ver `DECISIONES.md` §1). No cambiar numpy/pandas/pydantic/SQLAlchemy sin revisar
 esas constraints.
+
+## Reglas de la etapa 8 (simulador)
+
+* `simulador/` es caja negra: no importar `app/` ni `ml/` (salvo `tests/ml/sinteticos.py` en
+  el modo sintético). Lecturas internas solo de lectura (PostgreSQL, MLflow).
+* El oráculo (`simulador/defectos.py`) sale de `DECISIONES.md` §3/§9/§13: si no coincide con la
+  API, es una discrepancia que se informa; nunca se ajusta el oráculo al producto.
+* Solo proyectos `nm-sim-*`, `up --no-build`, etiquetas `sim-<commit>`; nunca `docker tag`/`rmi`
+  sobre `:local` ni `prune`. La carpeta de ejecuciones queda fuera del repositorio.
+* `evidencia/` se escribe una vez y `evidencia.sha256` solo al sellar; la limpieza no la borra.
+* Los plazos del enunciado (`simulador/escenario.PLAZOS`) no se relajan.
 
 ## Datos (`raw/`)
 
@@ -66,8 +78,8 @@ esas constraints.
 | 4 API FastAPI | hecho (PR #4) |
 | 5 MLflow (registro, alias, recarga, health) | hecho (PR #5) |
 | 6 Docker Compose + bootstrap | hecho (PR #6) |
-| 7 Airflow DAG + orquestador real de /admin | en revisión (`feat/etapa-7`) |
-| 8 Simulador de operación | pendiente |
+| 7 Airflow DAG + orquestador real de /admin | hecho (PR #7) |
+| 8 Simulador de operación | en revisión (`feat/etapa-8`) |
 | 9 Documentación final y tag `entrega-lab2` | pendiente |
 
 ## Mapa del código
@@ -96,7 +108,9 @@ ml/           datos.py (carga raw/), calendario.py (feriados), features.py (vari
               sin fuga), modelos.py (baseline + HGB), costos.py (costo, τ, cantidad
               óptima, calibrador), pronosticador.py (entrenamiento compartido
               producción/backtest), backtest.py, metricas.py
-scripts/      experimento_etapa2.py (backtesting -> reportes/etapa2/)
+scripts/      experimento_etapa2.py (backtesting -> reportes/etapa2/), verificar_*_docker.sh
+simulador/    (etapa 8) escenario, datos, defectos (oráculo), contrato, cliente, entorno,
+              imagenes, estado, evidencia, costos, simulacion, informe, __main__
 tests/unit/    pruebas por módulo + robustez (fuzzing determinista)
 tests/ml/      sin fuga, costo/cuantil, baseline, backtest (datos sintéticos)
 tests/api/     contrato HTTP con persistencia en memoria (tests/api/memoria.py) y modelo sintético

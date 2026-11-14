@@ -1196,7 +1196,129 @@ concesión) sin esperar: ocupada → código 5 → `skipped`.
 * G2 depende de que PostgreSQL esté disponible; sin él nadie puede escribir ni leer
   (GET → 503) y el cierre ocurre al volver.
 
+## 17. Simulador de operación (etapa 8)
+
+Plan técnico v3 aprobado (decisiones S1–S11, criterios 1–11). Código en `simulador/`.
+
+### Arquitectura
+
+* **Caja negra:** HTTP al puerto de la API y `docker compose` para los eventos de
+  operación; no importa `app/` ni `ml/` y no entra en ninguna imagen (los Dockerfile
+  copian carpetas concretas). Lecturas internas de **solo lectura** (S8): PostgreSQL con
+  `docker compose exec db psql` y la API REST de MLflow, separadas de las verificaciones
+  de caja negra.
+* Envío **secuencial**: la k-ésima solicitud enviada corresponde a la k-ésima fila de
+  `solicitudes_prediccion` / `envios_observacion` (también los rechazos).
+* *Alternativa descartada:* reutilizar `scripts/verificar_producto_docker.py`. Ese guion
+  prueba casos puntuales; el simulador opera días completos y su estado es reanudable.
+
+### Datos (S1, S10) y escenarios (S2)
+
+* `completo`: histórico cortado en **2025-11-30** (fechas ≤ corte) y reproducción de los
+  días 2025-12-01 a 2026-02-28 (90): promociones en la solicitud, ventas reales en la
+  observación del día siguiente. El día 1 no envía la observación del 2025-11-30 (ya está
+  en el histórico); el cierre envía la del 2026-02-28.
+* Antes del día 1 se comprueba: la carpeta preparada termina en el corte; en PostgreSQL,
+  `ventas_historicas` termina en el corte, `observaciones` está vacía y `cargas_datos`
+  coincide con los SHA-256 de la carpeta; el primer modelo tiene `corte = 2025-12-01`.
+* **S10:** `feriados.csv` completo, única excepción declarada: calendario conocido de
+  antemano (el enunciado lo garantiza para la evaluación) y sin ventas. Cortarlo dejaría
+  diciembre sin Navidad ni quincenas.
+* `corto` (CI): 400 días sintéticos de `tests/ml/sinteticos.generar_contrato` + 14 simulados.
+* **S2:** `cambio_demanda` (bebidas ×1,3 desde el día 46) es independiente y opcional: su
+  propio proyecto, carpeta e informe ("no son ventas reales"); no interviene en el informe
+  ni en los criterios de `completo` y no corre en la CI.
+
+### Calendario (S3, S4)
+
+* Reentrenamientos programados los días 7k+1 (8, 15, …, 85: **12**), después de las
+  observaciones: el día 8 ya hay 7 días registrados (R2 exige `DIAS_MINIMOS = 7`). Llevan
+  `Idempotency-Key: sim-<ejecución>-r<k>` (reanudar no duplica); el día 8 se repite la
+  solicitud con la misma clave (mismo id). Uno extra el día 47 **sin clave** (como el
+  Anexo) con MLflow detenido: se espera `fallido` con el vigente intacto. Total 13.
+* Si al llegar el siguiente la ejecución anterior sigue `en_curso`, el simulador no envía
+  ni avanza el día y consulta cada 5 s, con límite de 10 min desde su 202 (criterio 6).
+  Los eventos (MLflow detenido el día 47, `stop`/`start` el 30, `down`/`up` el 60) empiezan
+  solo sin ejecuciones en curso.
+* Defectos en el 25 % de las predicciones y el 20 % de las observaciones (semilla fija por
+  tienda y fecha); 5 % de repeticiones limpias. Una solicitud rechazada se reenvía limpia (S4).
+
+### Oráculo de defectos
+
+* 60 defectos en seis grupos (tienda, fecha, nombres de campo, estructura de la lista,
+  valor de un ítem y cuerpo), uno a tres combinados de grupos distintos (30 %). Cada uno
+  declara el resultado que dicta §3: código, pares (campo, acción) y valores que quedan
+  (promoción efectiva o venta guardada).
+* Advertencias de contexto: promoción atípica (§9) **obligatoria** por encima del máximo
+  que pudo ver cualquier modelo (histórico + promociones reales recibidas), **prohibida**
+  hasta el máximo de los últimos 365 días del histórico (incluido en todo entrenamiento) y
+  admisible entre ambos; antigüedad (§13 D-D) obligatoria si alguna familia no tiene la
+  venta de F−1 guardada.
+* `tests/simulador/test_oraculo_api.py` compara el oráculo con la API real (persistencia
+  en memoria): cada defecto con 3 semillas y 300 combinaciones. Una diferencia sería una
+  discrepancia entre este documento y el producto, nunca un ajuste del oráculo.
+
+### Versiones (criterio 4)
+
+Por cada pronóstico: `GET /modelo` (v_a), `POST` (v_p) y `GET /modelo` (v_d). Si
+v_a = v_d, v_p debe ser igual; si no, v_a o v_d. Sin retroceso: después de ver una
+versión nueva ninguna respuesta trae una anterior. Toda versión servida es la inicial o
+la `version` de una ejecución terminada. PostgreSQL registra exactamente v_p y las 12
+cantidades (venta esperada con tolerancia 1e-9).
+
+### Costo (S9)
+
+* Conjunto: tiendas abiertas × 12 familias × 90 fechas = **10 800 filas**; venta real de
+  `historico_ventas.csv`.
+* Servicio: `cantidad_sugerida` de la **primera respuesta 200** de cada tienda y fecha
+  (la primera solicitud del día puede llevar defectos; tras un 422, la del reenvío limpio).
+* Referencia `baseline_dow4`: media de la venta real en d−7, d−14, d−21 y d−28, redondeo
+  aritmético, mínimo 0 (prueba: coincide con `BaselineDiaSemana` + `cantidad_redondeo`).
+* `costo = cf·max(real − q, 0) + cs·max(q − real, 0)`, suma en coma flotante de 64 bits,
+  orden fijo (fecha, tienda, familia). Criterio: C_s < C_b (estricto).
+
+### Aislamiento, evidencia y reanudación (S11, plan v3)
+
+* Proyecto `nm-sim-<ejecución>` (`-p`, `--env-file` propio 0600 con claves aleatorias,
+  puertos 57000/57432/57500/57080, entorno mínimo del proceso). `up` siempre `--no-build`.
+* **S11:** `docker-compose.yml` usa `${NM_IMAGEN_APP:-novamercado-app:local}` y
+  `${NM_IMAGEN_AIRFLOW:-novamercado-airflow:local}` (único cambio al producto; sin las
+  variables nada cambia). El simulador construye `…:sim-<commit de 12>` explícitamente, con
+  el árbol limpio y `HEAD` = commit de la ejecución, y registra ID y procedencia. Antes de
+  cada arranque o reanudación: ID registrado y procedencia del commit, o se niega (código 3)
+  sin levantar nada. Nunca ejecuta `docker tag` ni `rmi` sobre `:local`.
+* Carpeta fuera del repositorio (`~/.local/state/novamercado-simulador/<escenario>-<id>`,
+  0700; si estuviera dentro, la etapa de procedencia la copiaría al contexto): `datos/`
+  (0755 para el contenedor; se borra al terminar), `trabajo/` y `evidencia/`.
+* **Evidencia:** `ventas_referencia.csv` (2025-11-03 a 2026-02-28), `costos.csv`,
+  `escenario.json`, `origen.json` (escritos una vez al preparar) y `respuestas.jsonl`
+  (copiado al sellar). `evidencia.sha256` se genera **una sola vez, al sellar**, con los
+  archivos definitivos; luego 0444/0555. `costos --recalcular` verifica el manifiesto y
+  calcula solo con esa carpeta (no lee `raw/` ni `datos/`). La limpieza (`down -v` del
+  proyecto, tras verificar el prefijo de cada recurso etiquetado) nunca la borra.
+* **Reanudación:** `estado.json` atómico; `respuestas.jsonl` con intención antes de cada
+  envío y resultado después. `reanudar` exige el mismo commit y huella de escenario,
+  levanta lo que falte (MLflow incluido) y repite el día incompleto: las observaciones
+  reenviadas esperan `registros_guardados` según lo ya guardado; una intención sin
+  resultado admite una fila de más en PostgreSQL. La solicitud del día 47 (sin clave) que
+  quedara sin id no se reenvía: se marca no verificable y el criterio 6 falla.
+
+### Desviaciones del plan
+
+* El plan mencionaba `.gitignore` para los resultados locales: no hizo falta, la carpeta
+  de ejecuciones está fuera del repositorio.
+
+### Verificación
+
+* `tests/simulador` (sin servidores): oráculo frente a la API; corte sin fuga, cuadrícula,
+  cambio de demanda; evidencia de escritura única, alterada o con archivos de más,
+  recálculo sin `datos/` ni `raw/`; costo y referencia frente a `ml/`; contrato; Compose
+  (I3) e imágenes (I4) con un ejecutor simulado; estado atómico. I1 e I2
+  (`-m compose`) con `docker compose config` en el job de persistencia.
+* CI "Simulación corta (sintética)": `scripts/verificar_simulador_docker.sh` (I5–I7).
+* Ejecución completa local: informe en `reportes/simulacion/` (S5: solo agregados y
+  ejemplos de predicción, sin ventas reales).
+
 ## Pendientes de decidir (etapas siguientes)
 
-No quedan decisiones abiertas de las etapas 0–7. Etapa 8: simulador de operación;
-etapa 9: documentación final y tag.
+No quedan decisiones abiertas de las etapas 0–8. Etapa 9: documentación final y tag.

@@ -54,7 +54,7 @@ jobs:
       - name: Verificar que no se usan datos locales
         run: test ! -e raw
       - name: pytest (calidad, contrato, ML; etapas 1-3 sin base de datos)
-        run: python -m pytest -m "not integracion" -q --junitxml=reportes-ci/unitarias.xml
+        run: python -m pytest -m "not integracion and not compose" -q --junitxml=reportes-ci/unitarias.xml
       - name: Resumen
         if: always()
         run: python .github/scripts/resumen_junit.py reportes-ci/unitarias.xml "Pruebas unitarias y de regresión" >> "$GITHUB_STEP_SUMMARY"
@@ -188,6 +188,8 @@ jobs:
         run: pip install -r requirements/dev.txt
       - name: Validar docker-compose.yml con .env.example
         run: docker compose --env-file .env.example config --quiet
+      - name: Etiquetas de imagen del Compose normal y del simulador (I1, I2)
+        run: python -m pytest -m compose tests/simulador -q
       - name: Reinicio y down/up sin perder datos (producto y MLflow); bases separadas
         run: bash scripts/verificar_persistencia_docker.sh
 
@@ -209,10 +211,28 @@ jobs:
       - name: Imágenes, arranque desde cero, contrato, reinicios, MLflow caído, E-ANT, procedencia y reentrenamiento con Airflow
         run: bash scripts/verificar_producto_docker.sh
 
+  simulacion:
+    name: Simulación corta (sintética)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+      - name: Instalar dependencias (solo para generar los datos sintéticos)
+        run: pip install -r requirements/dev.txt
+      - name: Verificar que no se usan datos locales
+        run: test ! -e raw
+      - name: 14 días simulados, reentrenamiento, MLflow caído, reinicios, reanudación e imágenes aisladas (I5–I7)
+        run: bash scripts/verificar_simulador_docker.sh
+
   resultado:
     name: CI resultado
     if: always()
-    needs: [calidad, pruebas, integracion, airflow, persistencia, producto]
+    needs: [calidad, pruebas, integracion, airflow, persistencia, producto, simulacion]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

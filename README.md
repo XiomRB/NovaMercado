@@ -247,6 +247,8 @@ abrirlo y con cada push a su rama) y en cada push a `main`:
 | Pruebas de integración (PostgreSQL) | migraciones up/down/up y `pytest -m integracion` contra un PostgreSQL 16 de servicio (incluye roles, vigilante y reentrenamiento con MLflow real) |
 | DAG con Airflow 2.10.5 | `tests/orquestacion` en un entorno con Airflow y sus *constraints*: `DagBag`, estructura del DAG y tareas SQL contra PostgreSQL |
 | Persistencia con Docker Compose | `scripts/verificar_persistencia_docker.sh` |
+| Persistencia con Docker Compose (etapa 8) | además, `pytest -m compose tests/simulador`: el Compose normal usa `:local` y el del simulador sus etiquetas `sim-<commit>` (I1, I2) |
+| Simulación corta (sintética) | `scripts/verificar_simulador_docker.sh`: 14 días simulados con defectos, reentrenamiento, MLflow caído, reinicios, interrupción y reanudación, imagen ajena rechazada (I5–I7), limpieza y `costos --recalcular` |
 | Producto con Docker Compose (extremo a extremo) | `scripts/verificar_producto_docker.sh`: imagen (sin datos ni bytecode, procedencia del commit, dependencias del lock), arranque desde cero con datos sintéticos hasta `ok`, contrato, reinicios sin entrenar de nuevo, MLflow caído y de vuelta, E-ANT, procedencia que no coincide y (etapa 7) imagen de Airflow, reentrenamiento por la API, cola, fallo forzado, Airflow caído y arranque verificado |
 | **CI resultado** | aprueba solo si todos los anteriores aprobaron; es el check obligatorio para fusionar |
 
@@ -260,11 +262,40 @@ Ejecutar lo mismo localmente:
 
 ```bash
 ruff check .
-python -m pytest -q -m "not integracion"
+python -m pytest -q -m "not integracion"     # incluye -m compose si hay Docker Compose
 bash scripts/pruebas_integracion_local.sh
 bash scripts/verificar_persistencia_docker.sh
 bash scripts/verificar_producto_docker.sh     # requiere el árbol de Git limpio
+bash scripts/verificar_simulador_docker.sh    # requiere el árbol de Git limpio
 ```
+
+## Simulador de operación (etapa 8)
+
+Ensaya la evaluación: operación diaria de las tiendas contra el producto levantado con
+Compose, como un programa externo (solo HTTP y `docker compose`). Diseño y criterios en
+`DECISIONES.md` §17.
+
+```bash
+# reproducción de 90 días con los datos publicados (~1–1,5 h; árbol de Git limpio)
+python -m simulador ejecutar --escenario completo --datos raw
+python -m simulador reanudar ~/.local/state/novamercado-simulador/completo-<id>   # si se interrumpió
+python -m simulador costos --recalcular ~/.local/state/novamercado-simulador/completo-<id>
+python -m simulador exportar ~/.local/state/novamercado-simulador/completo-<id> reportes/simulacion
+python -m simulador limpiar  ~/.local/state/novamercado-simulador/completo-<id>   # solo ese proyecto
+python -m simulador ejecutar --escenario corto        # 14 días sintéticos (lo que corre la CI)
+```
+
+* **Datos:** el histórico se corta en 2025-11-30 y los días 2025-12-01 a 2026-02-28 se
+  reproducen: promociones en las solicitudes, ventas reales en las observaciones del día
+  siguiente. `feriados.csv` va completo (calendario conocido de antemano).
+* **Aislamiento:** proyecto `nm-sim-<id>` con puertos 57000/57432/57500/57080, archivo de
+  entorno propio con claves aleatorias e imágenes `novamercado-*:sim-<commit>`; nunca toca
+  el `.env`, los volúmenes ni las imágenes `:local` del producto.
+* **Carpeta de la ejecución** (fuera del repositorio): `datos/` (se borra al terminar),
+  `trabajo/` (estado, registros e informe) y `evidencia/` (inmutable, con
+  `evidencia.sha256`; solo `borrar-evidencia --confirmar` la elimina).
+* Código de salida 0 si se cumplen todos los criterios; 1 si alguno falla (ver
+  `trabajo/informe/resumen.md`). El escenario `cambio_demanda` es opcional e independiente.
 
 ## Experimento de modelos (etapa 2)
 
@@ -296,8 +327,10 @@ ml/               variables, modelos, costo y cantidad sugerida, backtesting
 migraciones/      Alembic (0001 esquema inicial, 0002 concesión y promociones, 0003 reentrenamientos)
 dags/             DAG de Airflow (reentrenamiento y reconciliación) y nm_cierre.py (copia de app/db/cierre.py)
 docker/           lanzador (ejecutar) y arranque verificado de los comandos que entrenan
-scripts/          experimento, verificación de persistencia, pruebas locales
+simulador/        simulador de operación de caja negra (etapa 8; no entra en las imágenes)
+scripts/          experimento, verificación de persistencia, producto y simulador, pruebas locales
 reportes/etapa2/  resultados del backtesting
+reportes/simulacion/  informe agregado de la reproducción de 90 días (etapa 8)
 requirements/     comun.txt, api.txt, dev.txt (versiones fijas) y api.lock.txt (todas, con hashes)
 tests/
   unit/           pruebas por módulo y de robustez
@@ -306,6 +339,7 @@ tests/
   ejemplos/       un ejemplo sintético por caso del catálogo de errores
   api/            contrato HTTP, salud y modelo (persistencia en memoria, modelo sintético)
   integracion/    PostgreSQL y MLflow reales: migraciones, carga, idempotencia, API, registro, alias
+  simulador/      oráculo frente a la API, datos y corte, evidencia, costo, contrato e imágenes
   fixtures/       catálogo y ejemplos sintéticos (sin datos originales)
 .github/          workflow de CI y su script de resumen
 Dockerfile, .dockerignore, .gitattributes, docker-compose.yml, .env.example, alembic.ini
