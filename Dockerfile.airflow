@@ -1,0 +1,58 @@
+# Imagen de Airflow de NovaMercado (etapa 7, DECISIONES.md §16, E7-1 opción A): Airflow
+# 2.10.5 oficial (sus constraints y su sitio de usuario intactos) + un entorno virtual
+# AISLADO con exactamente las dependencias de la aplicación (requirements/api.lock.txt),
+# donde corren los comandos que entrenan. Airflow no es importable desde ese entorno y
+# el código del proyecto no es importable desde Airflow: los DAG solo ejecutan SQL
+# (dags/nm_cierre.py) y el lanzador docker/ejecutar.
+
+# ---------------------------------------------------------------- procedencia
+FROM alpine/git:v2.47.2@sha256:062a01ad7a0eb17cff382bc5e26086b4d710e56dfdfdf001109a49b6d9bd378c AS procedencia
+COPY . /src
+RUN sh /src/scripts/generar_procedencia.sh /src /out airflow
+
+# --------------------------------------------------------------------- final
+FROM apache/airflow:2.10.5-python3.11@sha256:b16e19f925ae0dcabaa2271b37212891ed68bf74e26c2db61f46dddd7d502937
+USER root
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    AIRFLOW__CORE__DAGS_FOLDER=/opt/novamercado/dags
+WORKDIR /opt/novamercado
+
+# Entorno virtual sin paquetes del sistema; herramientas de instalación y dependencias del
+# lock con --require-hashes --no-deps --no-compile (igual que la imagen de la aplicación).
+COPY requirements/comun.txt requirements/api.txt requirements/api.lock.txt /opt/novamercado/requirements/
+RUN PIP_USER=0 /usr/local/bin/python3.11 -m venv /opt/novamercado/venv \
+ && grep -qx 'include-system-site-packages = false' /opt/novamercado/venv/pyvenv.cfg \
+ && awk 'BEGIN{e=0} /^[^ #]/{e=($0 ~ /^(pip|setuptools|wheel)==/)} e' requirements/api.lock.txt \
+        > /tmp/herramientas.txt \
+ && PIP_USER=0 /opt/novamercado/venv/bin/python -m pip install --require-hashes --no-deps --no-compile \
+        -r /tmp/herramientas.txt \
+ && PIP_USER=0 /opt/novamercado/venv/bin/python -m pip install --require-hashes --no-deps --no-compile \
+        -r requirements/api.lock.txt \
+ && /opt/novamercado/venv/bin/python -m pip check \
+ && rm -f /tmp/herramientas.txt
+
+COPY alembic.ini /opt/novamercado/
+COPY migraciones /opt/novamercado/migraciones
+COPY ml /opt/novamercado/ml
+COPY app /opt/novamercado/app
+COPY dags /opt/novamercado/dags
+COPY docker/arranque_verificado.py docker/ejecutar /opt/novamercado/docker/
+COPY --from=procedencia /out /tmp/procedencia_git
+
+# procedencia.json y verificación final (como la imagen de la aplicación) + aislamiento:
+# Airflow no es importable desde el entorno virtual. Sin bytecode en el entorno virtual,
+# el código ni la biblioteca estándar que comparte con Airflow.
+RUN chmod 0755 /opt/novamercado/docker/ejecutar \
+ && /opt/novamercado/venv/bin/python -m app.modelo.procedencia --generar /tmp/procedencia_git \
+        --salida /opt/novamercado/procedencia.json \
+ && rm -rf /tmp/procedencia_git \
+ && find /usr/local/lib/python3.11 /opt/novamercado -depth \( -name __pycache__ -o -name '*.pyc' -o -name '*.pyo' \) \
+        -exec rm -rf {} + \
+ && PYTHONNOUSERSITE=1 /opt/novamercado/venv/bin/python -m app.modelo.procedencia --verificar-construccion \
+ && PYTHONNOUSERSITE=1 /opt/novamercado/venv/bin/python -c "import importlib.util as u, sys; \
+sys.exit('airflow es importable desde el entorno virtual' if u.find_spec('airflow') else 0)" \
+ && test -z "$(find /opt/novamercado /usr/local/lib/python3.11 \( -name '*.pyc' -o -name '*.pyo' \) -print -quit)"
+
+USER airflow

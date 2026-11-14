@@ -9,7 +9,7 @@
 # recibe estos datos, nunca .git.
 FROM alpine/git:v2.47.2@sha256:062a01ad7a0eb17cff382bc5e26086b4d710e56dfdfdf001109a49b6d9bd378c AS procedencia
 COPY . /src
-RUN sh /src/scripts/generar_procedencia.sh /src /out
+RUN sh /src/scripts/generar_procedencia.sh /src /out app
 
 # --------------------------------------------------------------------- final
 # Intérprete, biblioteca estándar y bibliotecas del sistema: solo el digest de la base.
@@ -36,12 +36,15 @@ COPY alembic.ini /app/
 COPY migraciones /app/migraciones
 COPY ml /app/ml
 COPY app /app/app
+# Etapa 7 (E7-14): arranque verificado y lanzador de los comandos que entrenan
+COPY docker/arranque_verificado.py docker/ejecutar /app/docker/
 COPY --from=procedencia /out /tmp/procedencia_git
 
 # procedencia.json y verificación final: dependencias siempre; código si el árbol
 # estaba limpio. Se borra todo el bytecode (también el de la biblioteca estándar) y se
 # comprueba que no queda ninguno: Python solo ejecuta las fuentes verificadas.
-RUN python -m app.modelo.procedencia --generar /tmp/procedencia_git --salida /app/procedencia.json \
+RUN chmod 0755 /app/docker/ejecutar \
+ && python -m app.modelo.procedencia --generar /tmp/procedencia_git --salida /app/procedencia.json \
  && rm -rf /tmp/procedencia_git \
  && find /usr/local/lib/python3.11 /app -depth \( -name __pycache__ -o -name '*.pyc' -o -name '*.pyo' \) \
         -exec rm -rf {} + \

@@ -1,0 +1,34 @@
+#!/bin/sh
+# Lanzador de los comandos que entrenan (etapa 7, DECISIONES.md §16; clase A).
+#
+# Uso:  ejecutar <reentrenar|reconciliacion|entrenar_mlflow|arranque> [argumentos...]
+#
+# Es la única forma en que el DAG (y, por E7-14, los servicios de la imagen de la
+# aplicación) ejecutan código del proyecto. "exec env -i" con una lista CERRADA de
+# variables: no pasa PYTHONPATH, PYTHONHOME ni ninguna variable de Airflow. Las
+# credenciales llegan del entorno del contenedor, nunca por campos con plantilla de
+# Airflow. Python arranca con -I -S -B en el arranque verificado.
+set -eu
+RAIZ=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+case "${1:-}" in
+    reentrenar|reconciliacion|entrenar_mlflow|arranque) MODULO="app.modelo.$1" ;;
+    *) echo "ejecutar: comando no permitido: ${1:-(ninguno)}" >&2; exit 2 ;;
+esac
+shift
+if [ -x "$RAIZ/venv/bin/python" ]; then
+    PY="$RAIZ/venv/bin/python"                     # imagen de Airflow: entorno virtual aislado
+else
+    PY=/usr/local/bin/python                       # imagen de la aplicación
+fi
+set -- "$PY" -I -S -B "$RAIZ/docker/arranque_verificado.py" "$MODULO" "$@"
+for v in POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB DB_HOST DB_PORT NM_CIERRE_PASSWORD \
+         MLFLOW_TRACKING_URI MLFLOW_MODELO_NOMBRE MLFLOW_ALIAS MLFLOW_HTTP_REQUEST_TIMEOUT \
+         MLFLOW_HTTP_REQUEST_MAX_RETRIES HILOS_ENTRENAMIENTO TZ; do
+    eval "definida=\${$v+x}"
+    if [ -n "$definida" ]; then
+        eval "valor=\${$v}"
+        set -- "$v=$valor" "$@"
+    fi
+done
+exec env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/tmp LANG=C.UTF-8 PYTHONNOUSERSITE=1 \
+    PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 "$@"

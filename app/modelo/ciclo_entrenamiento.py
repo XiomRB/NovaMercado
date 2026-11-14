@@ -141,6 +141,11 @@ def ejecutar_entrenamiento(*, url_bd: str, tracking_uri: str, nombre: str, alias
     origen = {"manual": "manual", "arranque": "arranque"}.get(modo, modo)
     if modo == "arranque":
         promover = "si_no_hay"
+    if modo == "reconciliacion":                    # DAG periódico (etapa 7): sin espera ni entrenamiento
+        with ConcesionEntrenamiento(url_bd, modo=modo, espera=0.0 if espera is None else espera) as c:
+            r = reconciliar(c, cliente, nombre, alias)
+            vigente = c.leer_vigente(nombre)
+        return ResultadoCiclo(OK, f"reconciliación completa (alias: {r.alias})", vigente.version if vigente else None)
     if modo == "reentrenamiento":
         if plazos is None:
             raise ValueError("el modo reentrenamiento requiere plazos")
