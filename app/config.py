@@ -125,3 +125,15 @@ def configurar_cliente_mlflow() -> None:
     reintentos salvo que el entorno indique otra cosa."""
     os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "5")
     os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "0")
+
+
+# ------------------------------------------------------------ reentrenamiento (etapa 7)
+def parametros_rol(usuario: str, variable_clave: str) -> dict:
+    """Parámetros psycopg2 para un rol de la etapa 7 (``nm_cierre``): host, puerto y base
+    de la URL del producto, con el usuario indicado y la clave de ``variable_clave``."""
+    from sqlalchemy.engine import make_url
+    clave = os.environ.get(variable_clave, "")
+    if not clave:
+        raise ConfiguracionInvalida(f"falta la variable de entorno {variable_clave}")
+    u = make_url(url_base_datos())
+    return {"host": u.host, "port": u.port or 5432, "dbname": u.database, "user": usuario, "password": clave}

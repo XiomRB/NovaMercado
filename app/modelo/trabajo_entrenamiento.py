@@ -92,6 +92,8 @@ def main(argv: list[str]) -> int:
                 kw["config"] = ConfigEntrenamiento(**entrada["config"])
             if entrada.get("evaluacion"):
                 kw["evaluacion"] = ConfigEvaluacion(**entrada["evaluacion"])
+            if entrada.get("campeon"):                  # reentrenamiento con vigente (etapa 7)
+                kw["campeon"] = entrada["campeon"]
             r = registrar_version(motor, origen=entrada.get("origen", "manual"), **comunes, **kw)
         finally:
             motor.dispose()

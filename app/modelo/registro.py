@@ -18,7 +18,12 @@ Flujo de :func:`registrar_version` (candidato):
    (artefacto descargado: SHA antes de deserializar, formato, bibliotecas y humo),
    registrados **por separado**.
 6. T4a: reproducción del backtest desde la copia descargada de MLflow.
-7. ``verificacion=superada|fallida`` y ``condiciones``; si algo falla, la versión
+7. Reentrenamiento (etapa 7): si el supervisor pasa el ``campeon`` (decisión vigente
+   confirmada en PostgreSQL), criterio R2 (``app.modelo.r2``): el campeón se descarga y
+   verifica **antes** de escribir la copia (su ``corte_v`` queda en el manifiesto) y R2
+   se calcula después de T4a, con ``r2/resultados_por_bloque.csv`` (tag ``sha256_r2``).
+   R2 no es requisito de validez: lo exige solo la promoción ``si_mejora``.
+8. ``verificacion=superada|fallida`` y ``condiciones``; si algo falla, la versión
    pasa a ``invalido`` (solo baja de categoría). La ejecución termina ``FINISHED``.
 
 :func:`registrar_respaldo` hace lo mismo con ``baseline_dow4`` sobre la copia del
@@ -71,7 +76,7 @@ RUTA_MODELO = "modelo"
 RUTA_DATOS = "datos"
 RUTA_BACKTEST = "backtest"
 ARCHIVO_BACKTEST = "resultados_por_corte.csv"
-MODOS_PROMOVER = ("si_no_hay", "siempre", "nunca")
+MODOS_PROMOVER = ("si_no_hay", "siempre", "nunca", "si_mejora")
 RAIZ = Path(__file__).resolve().parents[2]
 # Criterios que debe superar una versión para poder autorizarse (§5.1 y §6).
 REQUERIDOS = {
@@ -111,6 +116,7 @@ class ResultadoRegistro:
     sha256: str | None = None
     ruta_artefacto: str | None = None
     huella: str | None = None
+    r2: dict | None = None            # etapa 7: resultado de R2 y la decisión del campeón
 
     def como_dict(self) -> dict:
         return asdict(self)
@@ -242,8 +248,8 @@ def _cliente(tracking_uri: str):
 
 def _registrar(*, datos_bd: DatosEntrenamiento, tracking_uri: str, nombre: str, git_commit: str, epoca: int,
                origen: str, criterio: str, config: ConfigEntrenamiento, evaluacion: ConfigEvaluacion,
-               comprobar: Callable[[], None], etiquetas: dict, tabla_candidato: pd.DataFrame | None = None
-               ) -> ResultadoRegistro:
+               comprobar: Callable[[], None], etiquetas: dict, tabla_candidato: pd.DataFrame | None = None,
+               campeon: dict | None = None) -> ResultadoRegistro:
     mlflow, cliente = _cliente(tracking_uri)
     modelos = MODELOS_CANDIDATO if criterio == "candidato" else MODELOS_RESPALDO
     t0 = time.monotonic()
@@ -253,6 +259,10 @@ def _registrar(*, datos_bd: DatosEntrenamiento, tracking_uri: str, nombre: str, 
         extra = {"config": asdict(config), "evaluacion": evaluacion.como_dict(), "git_commit": git_commit,
                  "entorno": entorno(), "hilos_entrenamiento": hilos, "modelos_evaluados": list(modelos),
                  "criterio": criterio}
+        campeon_p, r2_previo = None, None
+        if criterio == "candidato" and campeon is not None:
+            campeon_p, corte_v, r2_previo = _preparar_campeon(tracking_uri, campeon, tmp)
+            extra["campeon"] = {k: campeon.get(k) for k in CAMPOS_CAMPEON} | {"corte_v": corte_v}
         manifiesto, huella = escribir_copia(datos_bd, tmp / RUTA_DATOS, extra)
         datos, manifiesto_leido = leer_copia(tmp / RUTA_DATOS, huella)   # desde aquí, solo la copia
         # La configuración también sale del manifiesto releído, igual que en `reproducir`:
@@ -324,6 +334,11 @@ def _registrar(*, datos_bd: DatosEntrenamiento, tracking_uri: str, nombre: str, 
                 t4a = verificar_t4a(tracking_uri, run_id, huella, sha_backtest, evaluacion, config, modelos)
             mlflow.log_metric("segundos_t4a", time.monotonic() - t)
             cond = {"T1": True, **crit.condiciones, "T3": not t3, "T4a": not t4a, "T4b": not t4b}
+            r2 = None
+            if criterio == "candidato" and campeon is not None:
+                r2 = _registrar_r2(mlflow, cliente, tmp, nombre, version, datos, config, hilos, campeon,
+                                   campeon_p, r2_previo)
+                cond["R2"] = r2["resultado"]
             fallas = ([f"T3: {t3}"] if t3 else []) + ([f"T4b: {t4b}"] if t4b else []) + \
                      ([f"T4a: {t4a[0]}"] if t4a else [])
             superada = all(cond.get(k, False) for k in REQUERIDOS[criterio])
@@ -339,7 +354,7 @@ def _registrar(*, datos_bd: DatosEntrenamiento, tracking_uri: str, nombre: str, 
             mlflow.set_tags({"verificacion": "superada" if superada else "fallida", "motivo": motivo})
             mlflow.end_run(status="FINISHED")
             return ResultadoRegistro(run_id, version, superada, motivo, cond, crit.resumen, criterio, epoca,
-                                     sha_art, ruta_artefacto, huella)
+                                     sha_art, ruta_artefacto, huella, r2)
         except BaseException as exc:
             if version is not None:
                 try:
@@ -363,12 +378,15 @@ def _registrar(*, datos_bd: DatosEntrenamiento, tracking_uri: str, nombre: str, 
 def registrar_version(motor, *, tracking_uri: str, nombre: str, git_commit: str, epoca: int,
                       comprobar: Callable[[], None], origen: str = "manual",
                       config: ConfigEntrenamiento = CONFIG_APROBADA, evaluacion: ConfigEvaluacion | None = None,
-                      etiquetas: dict | None = None) -> ResultadoRegistro:
-    """Candidato desde PostgreSQL. Deja la versión ``pendiente`` o ``invalido``."""
+                      etiquetas: dict | None = None, campeon: dict | None = None) -> ResultadoRegistro:
+    """Candidato desde PostgreSQL. Deja la versión ``pendiente`` o ``invalido``.
+    ``campeon`` (solo reentrenamiento con vigente): decisión confirmada contra la que se
+    calcula R2."""
     comprobar()
     return _registrar(datos_bd=desde_bd(motor), tracking_uri=tracking_uri, nombre=nombre, git_commit=git_commit,
                       epoca=epoca, origen=origen, criterio="candidato", config=config,
-                      evaluacion=evaluacion or ConfigEvaluacion(), comprobar=comprobar, etiquetas=etiquetas or {})
+                      evaluacion=evaluacion or ConfigEvaluacion(), comprobar=comprobar, etiquetas=etiquetas or {},
+                      campeon=campeon)
 
 
 def registrar_respaldo(*, run_candidato: str, tracking_uri: str, nombre: str, git_commit: str, epoca: int,
@@ -403,8 +421,56 @@ def califica_para_respaldo(r: ResultadoRegistro) -> bool:
         return False
     if not all(r.condiciones.get(k, False) for k in TECNICOS):
         return False
-    fallas = {k for k, v in r.condiciones.items() if not v}
+    fallas = {k for k, v in r.condiciones.items() if not v and k != "R2"}     # R2 (etapa 7) no cuenta
     return bool(fallas) and fallas <= set(COMERCIALES)
+
+
+# ------------------------------------------------------------------ R2 (etapa 7)
+CAMPOS_CAMPEON = ("decision_id", "secuencia", "version", "run_id", "ruta_artefacto", "sha256_artefacto", "origen")
+
+
+def _preparar_campeon(tracking_uri: str, campeon: dict, tmp: Path):
+    """Antes de la copia: descarga y verifica el campeón. Devuelve ``(pronosticador,
+    corte_v, None)`` o ``(None, None, ResultadoR2 no_disponible)``."""
+    from app.modelo.r2 import CampeonNoDisponible, no_disponible, obtener_campeon
+    try:
+        p, corte_v = obtener_campeon(tracking_uri, campeon, tmp / "r2_campeon")
+        return p, corte_v.strftime("%Y-%m-%d"), None
+    except CampeonNoDisponible as exc:
+        logger.warning("R2 no disponible: %s", exc)
+        return None, None, no_disponible(str(exc))
+
+
+def _registrar_r2(mlflow, cliente, tmp: Path, nombre: str, version: str, datos: DatosEntrenamiento,
+                  config: ConfigEntrenamiento, hilos: int, campeon: dict, campeon_p, r2_previo) -> dict:
+    from app.modelo.r2 import ARCHIVO_R2, RUTA_R2, calcular
+    t = time.monotonic()
+    if r2_previo is not None:
+        r2 = r2_previo
+    else:
+        try:
+            with hilos_fijos(hilos):
+                r2 = calcular(datos, campeon_p, pd.Timestamp(campeon_p.info["corte"]), config)
+        except ValueError as exc:
+            from app.modelo.r2 import ResultadoR2
+            r2 = ResultadoR2(False, f"R2 falla cerrado: {exc}")
+    mlflow.log_metric("segundos_r2", time.monotonic() - t)
+    tabla = r2.tabla_csv()
+    (tmp / ARCHIVO_R2).write_bytes(tabla)
+    mlflow.log_artifact(str(tmp / ARCHIVO_R2), RUTA_R2)
+    sha_r2 = sha256(tabla)
+    for k, v in r2.metricas().items():
+        mlflow.log_metric(k, v)
+    resultado = r2.resultado if isinstance(r2.resultado, str) else bool(r2.resultado)
+    etiquetas = {"sha256_r2": sha_r2, "r2": json.dumps(resultado), "r2_motivo": r2.motivo[:500],
+                 "r2_decision_id": str(campeon.get("decision_id"))}
+    for k, v in etiquetas.items():
+        cliente.set_model_version_tag(nombre, version, k, v)
+    mlflow.set_tags(etiquetas)
+    return {"resultado": resultado, "motivo": r2.motivo, "decision_id": campeon.get("decision_id"),
+            "secuencia": campeon.get("secuencia"), "version": campeon.get("version"), "corte_v": r2.corte_v,
+            "costo_retador": r2.costo_retador, "costo_vigente": r2.costo_vigente, "dias": r2.dias,
+            "filas": r2.filas, "sha256_r2": sha_r2}
 
 
 def resumen_json(r: ResultadoRegistro) -> str:
