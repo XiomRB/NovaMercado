@@ -127,6 +127,21 @@ class Entorno:
     def logs(self, servicio: str) -> str:
         return self.compose("logs", "--no-color", servicio).stdout
 
+    def guardar_logs(self, destino: Path) -> dict:
+        """Diagnóstico sin tocar el entorno: logs de cada servicio (con marcas de tiempo), el
+        estado de los contenedores y la lista de recursos del proyecto, en ``destino`` (0700)."""
+        destino = Path(destino)
+        destino.mkdir(mode=0o700, parents=True, exist_ok=True)
+        servicios = self.compose("config", "--services").stdout.split()
+        guardados = {}
+        for s in servicios:
+            r = self.compose("logs", "--no-color", "--timestamps", s)
+            (destino / f"{s}.log").write_text(r.stdout + r.stderr)
+            guardados[s] = len(r.stdout)
+        (destino / "ps.txt").write_text(self.compose("ps", "-a").stdout)
+        (destino / "recursos.json").write_text(json.dumps(self.recursos(), indent=1))
+        return guardados
+
     # -- recursos y limpieza
     def recursos(self) -> dict[str, list[str]]:
         filtro = f"label=com.docker.compose.project={self.proyecto}"

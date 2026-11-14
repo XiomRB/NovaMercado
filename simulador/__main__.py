@@ -28,9 +28,9 @@ from simulador.escenario import ESCENARIOS
 SALIDA_OK, SALIDA_FALLOS, SALIDA_USO, SALIDA_IMAGEN, SALIDA_INTERRUMPIDA = 0, 1, 2, 3, 10
 
 
-def _correr(carpeta: Path, esc, interrumpir) -> int:
+def _correr(carpeta: Path, esc, interrumpir, detener_en=()) -> int:
     estado, entorno = simulacion.abrir(carpeta, esc)
-    sim = simulacion.Simulacion(carpeta, esc, estado, entorno, interrumpir_tras=interrumpir)
+    sim = simulacion.Simulacion(carpeta, esc, estado, entorno, interrumpir_tras=interrumpir, detener_en=detener_en)
     try:
         if estado["fase"] == "preparada":
             sim.arrancar()
@@ -48,6 +48,8 @@ def _correr(carpeta: Path, esc, interrumpir) -> int:
         return SALIDA_IMAGEN
     except simulacion.Detener as exc:
         print(f"DETENIDA: {exc}", file=sys.stderr)
+        estado["diagnostico"] = simulacion.conservar_diagnostico(sim)
+        estado.guardar()
         destino = informe.escribir(carpeta, estado.datos, esc, estado.respuestas.leer())
         print(f"informe parcial: {destino / 'resumen.md'}; el entorno se conserva (limpiar con: "
               f"python -m simulador limpiar {carpeta})")
@@ -71,9 +73,12 @@ def main(argv=None) -> int:
     e.add_argument("--base", type=Path, default=None, help="carpeta de ejecuciones (fuera del repositorio)")
     e.add_argument("--puerto-base", type=int, default=None, help="desplaza los cuatro puertos (57000 por defecto)")
     e.add_argument("--interrumpir-tras-dia", type=int, default=None, help="solo para pruebas de reanudación")
+    e.add_argument("--detener-en-criterio", type=int, action="append", default=[],
+                   help="detiene la ejecución en cuanto falle ese criterio (conserva entorno y logs)")
     r = sub.add_parser("reanudar")
     r.add_argument("carpeta", type=Path)
     r.add_argument("--interrumpir-tras-dia", type=int, default=None)
+    r.add_argument("--detener-en-criterio", type=int, action="append", default=[])
     li = sub.add_parser("limpiar")
     li.add_argument("carpeta", type=Path)
     c = sub.add_parser("costos")
@@ -98,13 +103,13 @@ def main(argv=None) -> int:
             if a.puerto_base:
                 puertos = {k: a.puerto_base + (v - 57000) for k, v in puertos.items()}
             carpeta, _ = simulacion.nueva(esc, a.datos, base, puertos)
-            return _correr(carpeta, esc, a.interrumpir_tras_dia)
+            return _correr(carpeta, esc, a.interrumpir_tras_dia, tuple(a.detener_en_criterio))
         if a.orden == "reanudar":
             esc, datos = _escenario_de(a.carpeta)
             if datos["fase"] in ("sellada", "cerrada"):
                 print("la ejecución ya terminó")
                 return SALIDA_USO
-            return _correr(a.carpeta, esc, a.interrumpir_tras_dia)
+            return _correr(a.carpeta, esc, a.interrumpir_tras_dia, tuple(a.detener_en_criterio))
         if a.orden == "limpiar":
             esc, _ = _escenario_de(a.carpeta)
             estado, entorno = simulacion.abrir(a.carpeta, esc)

@@ -74,13 +74,15 @@ class Memoria:
 
 class Simulacion:
     def __init__(self, carpeta: Path, esc: Escenario, estado: est.Estado, entorno: ent.Entorno,
-                 interrumpir_tras: int | None = None, salida=print):
+                 interrumpir_tras: int | None = None, salida=print, detener_en: tuple[int, ...] = ()):
         self.carpeta, self.esc, self.estado, self.entorno = Path(carpeta), esc, estado, entorno
         self.trabajo, self.evid = self.carpeta / "trabajo", self.carpeta / "evidencia"
         self.datos_dir = self.carpeta / "datos"
         self.api = Cliente(entorno.puertos["API_PUERTO_HOST"])
         self.mlflow = Cliente(entorno.puertos["MLFLOW_PUERTO_HOST"], timeout=10)
         self.interrumpir_tras = interrumpir_tras
+        self.detener_en = tuple(detener_en)
+        self.detencion: int | None = None
         self.salida = salida
         self.tiendas, fams = datos.leer_catalogo(self.datos_dir)
         self.familias = [f for f, _ in fams]
@@ -101,6 +103,12 @@ class Simulacion:
         self.estado["fallos"].append({"criterio": criterio, "detalle": detalle[:600], "dia": dia, "t": time.time()})
         self.estado.guardar()
         self.log(f"FALLO criterio {criterio}: {detalle[:300]}")
+        if criterio in self.detener_en and self.detencion is None:
+            self.detencion = criterio            # se detiene en el siguiente punto seguro
+
+    def revisar_detencion(self) -> None:
+        if self.detencion is not None:
+            raise Detener(f"falló el criterio {self.detencion} (--detener-en-criterio)")
 
     def medir(self, clave: str, valor) -> None:
         self.estado["mediciones"].setdefault(clave, []).append(valor)
@@ -250,6 +258,7 @@ class Simulacion:
                 continue
             if r.cuerpo["estado"] != "en_curso":
                 self.terminar(e, r.cuerpo, r.fin)
+                self.revisar_detencion()
             elif time.time() - e["t_202"] > self.esc.plazos["reentrenamiento"] + INTERVALO_SONDEO:
                 self.fallo(6, f"{e['id']} sigue en_curso más de {self.esc.plazos['reentrenamiento']} s", e["dia"])
                 e["terminal"] = {"estado": "excedido"}
@@ -280,9 +289,49 @@ class Simulacion:
             v, _ = self.modelo(e["dia"])
             if v != cuerpo["version"]:
                 self.fallo(6, f"{e['id']} no promovió (version {cuerpo['version']}) y /modelo sirve {v}", e["dia"])
+        self.registrar_diagnostico_r2(e)
         self.log(f"reentrenamiento {e['tipo']} día {e['dia']}: {cuerpo['estado']} promovido={cuerpo['promovido']} "
                  f"versión {cuerpo['version']} en {e['duracion']:.0f} s")
         self.estado.guardar()
+
+    def registrar_diagnostico_r2(self, e: dict) -> None:
+        """Solo lectura (S8), sin efecto en los criterios: horas de la ejecución en PostgreSQL
+        (a reloj del equipo), la última observación que el simulador había enviado en cada una,
+        y las versiones registradas con su corte y R2 (tags y métricas de MLflow)."""
+        try:
+            d = self.desfase_pg()
+            filas = self.entorno.psql_json(
+                "SELECT extract(epoch FROM s.solicitado_en)::float8 AS solicitada, "
+                "extract(epoch FROM t.iniciada_en)::float8 AS iniciada, "
+                "extract(epoch FROM r.reclamada_en)::float8 AS reclamada, "
+                "extract(epoch FROM x.terminado_en)::float8 AS terminada, x.escrito_por, r.epoca "
+                "FROM solicitudes_reentrenamiento s LEFT JOIN tareas_reentrenamiento t USING (id) "
+                "LEFT JOIN reclamaciones_reentrenamiento r USING (id) LEFT JOIN resultados_reentrenamiento x "
+                f"USING (id) WHERE s.id = '{e['id']}'")
+            tiempos = {k: (v - d if isinstance(v, float) else v) for k, v in (filas[0] if filas else {}).items()}
+
+            def ultima_obs(t):
+                envs = [r for r in self.registros if r["tipo"] == "observacion" and r["fase"] == "resultado"
+                        and r["codigo"] == 200 and t is not None and r["fin"] <= t]
+                return max((r["fecha"] for r in envs), default=None)
+            versiones = []
+            for v in self.versiones_mlflow():
+                tags = {t["key"]: t["value"] for t in v.get("tags", [])}
+                run = self.mlflow_json(f"/api/2.0/mlflow/runs/get?run_id={v.get('run_id')}").get("run", {})
+                met = {m["key"]: m["value"] for m in run.get("data", {}).get("metrics", [])
+                       if m["key"].startswith("r2")}
+                versiones.append({"version": v["version"], "corte": tags.get("corte"), "estado": tags.get("estado"),
+                                  "r2": tags.get("r2"), "r2_motivo": tags.get("r2_motivo"), "metricas": met})
+            diag = {"id": e["id"], "dia": e["dia"], "tipo": e["tipo"], "t_202": e.get("t_202"), "pg": tiempos,
+                    "ultima_observacion_enviada": {k: ultima_obs(tiempos.get(k)) for k in
+                                                   ("solicitada", "iniciada", "reclamada", "terminada")},
+                    "versiones": versiones}
+            destino = self.trabajo / "r2"
+            destino.mkdir(exist_ok=True)
+            (destino / f"dia{e['dia']:02d}-{e['tipo']}.json").write_text(json.dumps(diag, ensure_ascii=False,
+                                                                                   indent=1))
+        except Exception as exc:                 # diagnóstico: nunca interrumpe la simulación
+            self.estado.evento("diagnostico_r2_no_guardado", id=e["id"], error=str(exc)[:300])
 
     def esperar_promocion(self, e: dict) -> None:
         v = e["terminal"]["version"]
@@ -553,6 +602,7 @@ class Simulacion:
             self.verificar_pg(dia)
             e["dia_completo"] = dia
             e.guardar()
+            self.revisar_detencion()
             if self.interrumpir_tras is not None and dia >= self.interrumpir_tras:
                 raise Interrumpida(f"interrupción pedida tras el día {dia}")
         self.esperar_sin_pendientes()
@@ -673,8 +723,21 @@ def abrir(carpeta: Path, esc: Escenario) -> tuple[est.Estado, ent.Entorno]:
     return estado, entorno
 
 
+def conservar_diagnostico(sim) -> dict:
+    """Guarda los logs de los servicios en ``trabajo/logs`` sin detener ni borrar nada."""
+    destino = sim.trabajo / "logs"
+    try:
+        guardados = sim.entorno.guardar_logs(destino)
+    except Exception as exc:                  # el diagnóstico nunca debe ocultar el fallo original
+        sim.estado.evento("logs_no_guardados", error=str(exc)[:300])
+        return {"error": str(exc)[:300]}
+    sim.estado.evento("diagnostico_conservado", destino=str(destino), servicios=sorted(guardados))
+    return {"destino": str(destino), "servicios": sorted(guardados)}
+
+
 def cerrar(sim: Simulacion) -> dict:
-    """Verificación final, costo, sellado, limpieza y recálculo desde la evidencia."""
+    """Verificación final, costo, sellado y recálculo desde la evidencia. Limpia el entorno
+    solo si no falló ningún criterio; si no, lo conserva y guarda sus logs."""
     import shutil
     e = sim.estado
     sim.verificar_final()
@@ -687,10 +750,16 @@ def cerrar(sim: Simulacion) -> dict:
     e["manifiesto"] = evidencia.sellar(sim.evid, sim.trabajo / "respuestas.jsonl")
     e["fase"] = "sellada"
     e.guardar()
-    borrados = sim.entorno.limpiar()
-    shutil.rmtree(sim.datos_dir)
-    e["limpieza"] = {"borrados": borrados, "datos_borrados": not sim.datos_dir.exists(),
-                     "evidencia_presente": evidencia.sellada(sim.evid)}
+    if e["fallos"]:
+        # con algún criterio incumplido no se limpia: el entorno y sus logs quedan para el
+        # diagnóstico (limpieza manual con ``python -m simulador limpiar``)
+        e["limpieza"] = {"omitida": True, "logs": conservar_diagnostico(sim),
+                         "evidencia_presente": evidencia.sellada(sim.evid)}
+    else:
+        borrados = sim.entorno.limpiar()
+        shutil.rmtree(sim.datos_dir)
+        e["limpieza"] = {"borrados": borrados, "datos_borrados": not sim.datos_dir.exists(),
+                         "evidencia_presente": evidencia.sellada(sim.evid)}
     recalculo = costos.recalcular(sim.evid)
     e["recalculo"] = {k: recalculo[k] for k in ("costo_servicio", "costo_referencia", "filas")}
     if e["recalculo"] != {k: resultado[k] for k in ("costo_servicio", "costo_referencia", "filas")}:

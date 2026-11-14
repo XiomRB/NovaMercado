@@ -1296,6 +1296,13 @@ cantidades (venta esperada con tolerancia 1e-9).
   archivos definitivos; luego 0444/0555. `costos --recalcular` verifica el manifiesto y
   calcula solo con esa carpeta (no lee `raw/` ni `datos/`). La limpieza (`down -v` del
   proyecto, tras verificar el prefijo de cada recurso etiquetado) nunca la borra.
+* **Fallos:** si algún criterio falla, el cierre no limpia: conserva contenedores, volúmenes y
+  `datos/`, y guarda en `trabajo/logs/` los logs de cada servicio (con marcas de tiempo),
+  `ps -a` y la lista de recursos. `--detener-en-criterio N` detiene la ejecución en el primer
+  punto seguro tras un fallo de ese criterio. La limpieza manual sigue con `limpiar`.
+* **Diagnóstico de R2** (solo lectura, sin efecto en los criterios): por ejecución, `trabajo/r2/`
+  guarda sus horas en PostgreSQL, la última observación enviada en cada una y el corte y R2
+  de cada versión registrada.
 * **Reanudación:** `estado.json` atómico; `respuestas.jsonl` con intención antes de cada
   envío y resultado después. `reanudar` exige el mismo commit y huella de escenario,
   levanta lo que falte (MLflow incluido) y repite el día incompleto: las observaciones
@@ -1307,6 +1314,9 @@ cantidades (venta esperada con tolerancia 1e-9).
 
 * El plan mencionaba `.gitignore` para los resultados locales: no hizo falta, la carpeta
   de ejecuciones está fuera del repositorio.
+* La primera implementación limpiaba el entorno al cerrar aunque hubiera fallos (el plan
+  decía limpiar solo al terminar con éxito); en la primera reproducción real eso borró los
+  logs del producto. Corregido: ver "Fallos" arriba.
 
 ### Verificación
 
