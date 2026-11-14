@@ -47,14 +47,15 @@ x-aplicacion: &aplicacion
   environment: *entorno-aplicacion
 
 # Imagen y configuración de Airflow (etapa 7). La URL de su base se arma con las claves
-# escapadas (sql_alchemy_conn_cmd), así admite cualquier carácter.
+# escapadas (sql_alchemy_conn_cmd), así admite cualquier carácter. Sin salto de línea
+# final: Airflow no recorta la salida del comando.
 x-entorno-airflow: &entorno-airflow
   AIRFLOW_DB_NAME: ${AIRFLOW_DB_NAME:?defina AIRFLOW_DB_NAME en .env}
   AIRFLOW_DB_USER: ${AIRFLOW_DB_USER:?defina AIRFLOW_DB_USER en .env}
   AIRFLOW_DB_PASSWORD: ${AIRFLOW_DB_PASSWORD:?defina AIRFLOW_DB_PASSWORD en .env}
   AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD: >-
     python -c "import os, urllib.parse as u; e = os.environ; q = lambda v: u.quote(e[v], safe='');
-    print(f'postgresql+psycopg2://{q(\"AIRFLOW_DB_USER\")}:{q(\"AIRFLOW_DB_PASSWORD\")}@airflow-db:5432/{q(\"AIRFLOW_DB_NAME\")}')"
+    print(f'postgresql+psycopg2://{q(\"AIRFLOW_DB_USER\")}:{q(\"AIRFLOW_DB_PASSWORD\")}@airflow-db:5432/{q(\"AIRFLOW_DB_NAME\")}', end='')"
   AIRFLOW__CORE__EXECUTOR: LocalExecutor
   AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?defina AIRFLOW_FERNET_KEY en .env}
   AIRFLOW__CORE__LOAD_EXAMPLES: "false"
@@ -210,6 +211,7 @@ services:
       - |
         set -eu
         airflow db migrate
+        airflow sync-perm                 # crea los roles predefinidos (Op, User, ...)
         crear() {
           if airflow users list -o plain 2>/dev/null | awk '{print $$2}' | grep -qx "$$1"; then
             echo "usuario $$1 ya existe"
