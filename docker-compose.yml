@@ -43,7 +43,8 @@ x-claves-roles: &claves-roles
 x-aplicacion: &aplicacion
   build:
     context: .
-  image: novamercado-app:local
+  # Etiqueta configurable solo para el simulador (etapa 8, S11): sin la variable es la de siempre.
+  image: ${NM_IMAGEN_APP:-novamercado-app:local}
   environment: *entorno-aplicacion
 
 # Imagen y configuración de Airflow (etapa 7). La URL de su base se arma con las claves
@@ -75,7 +76,7 @@ x-airflow: &airflow
   build:
     context: .
     dockerfile: Dockerfile.airflow
-  image: novamercado-airflow:local
+  image: ${NM_IMAGEN_AIRFLOW:-novamercado-airflow:local}
   environment: *entorno-airflow
   volumes:
     - airflow_logs:/opt/airflow/logs
