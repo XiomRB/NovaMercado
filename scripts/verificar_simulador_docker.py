@@ -58,12 +58,18 @@ def sim(*args):
     return r.returncode
 
 
+PROPIOS = {"api", "preparar", "entrenamiento-inicial", "airflow-init", "airflow-scheduler", "airflow-webserver"}
+
+
 def contenedores(proyecto):
+    """nombre -> (inicio, imagen, servicio) de todos los contenedores del proyecto."""
     r = run("docker", "ps", "-a", "--filter", f"label=com.docker.compose.project={proyecto}", "--format", "{{.ID}}")
     out = {}
     for cid in r.stdout.split():
-        i = run("docker", "inspect", "-f", "{{.Name}} {{.State.StartedAt}} {{.Image}}", cid).stdout.split()
-        out[i[0]] = (i[1], i[2])
+        i = run("docker", "inspect", "-f",
+                '{{.Name}} {{.State.StartedAt}} {{.Image}} {{index .Config.Labels "com.docker.compose.service"}}',
+                cid).stdout.split()
+        out[i[0]] = (i[1], i[2], i[3])
     return out
 
 
@@ -95,8 +101,12 @@ def main() -> int:
         despues = contenedores(proyecto)
         ajena = id_imagen(PEQUENA)
         comprobar(codigo == 3, f"I7: reanudar con {etiqueta} ajena → código {codigo} (3)")
-        comprobar(antes == despues and not any(img == ajena for _, img in despues.values()),
-                  "I7: ningún contenedor se reinició ni usa la imagen ajena")
+        if antes != despues:
+            print({k: (antes.get(k), despues.get(k)) for k in set(antes) | set(despues)
+                   if antes.get(k) != despues.get(k)})
+        # la imagen ajena es la de postgres: solo cuentan los servicios con imagen propia
+        comprobar(antes == despues and not any(img == ajena for _, img, srv in despues.values() if srv in PROPIOS),
+                  "I7: ningún contenedor se creó ni se reinició; ninguno de la aplicación usa la imagen ajena")
         run("docker", "tag", registradas["app"]["id"], etiqueta)
         comprobar(id_imagen(etiqueta) == registradas["app"]["id"], "etiqueta restaurada al ID registrado")
 
