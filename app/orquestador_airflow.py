@@ -150,11 +150,20 @@ class OrquestadorAirflow:
 
     # ------------------------------------------------------------------ iniciar
     def iniciar(self, clave: str | None = None, cuerpo: bytes = b"") -> str:
+        import time
         clave = validar_clave(clave)
+        t = time.monotonic()
         id_, pendiente = self._registrar(clave, huella(cuerpo) if clave else None)
         if not pendiente:
             return id_                                   # ya terminó: 202 con el mismo id
-        if self._enviar(id_):
+        t_reg = time.monotonic()
+        aceptada = self._enviar(id_)
+        fin = time.monotonic()
+        # duraciones (no lleva el id ni credenciales): registro en PostgreSQL y Airflow (cota 8 s)
+        logger.warning("inicio %s: registro %.2f s, Airflow %.2f s (presupuesto %.0f s)",
+                       "confirmado" if aceptada else "sin confirmar", t_reg - t, fin - t_reg,
+                       self.presupuesto_inicio)
+        if aceptada:
             return id_
         raise OrquestadorNoDisponible("no se pudo confirmar el inicio en Airflow; la solicitud quedó pendiente "
                                       "(reintente con la misma Idempotency-Key)")

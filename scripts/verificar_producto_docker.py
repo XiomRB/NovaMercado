@@ -50,6 +50,7 @@ FIX = RAIZ / "tests" / "fixtures" / "ejemplos"
 RESULTADOS: list[str] = []
 VIGENTE: dict = {}                               # versión vigente tras el arranque
 NUEVOS: list = []                                # días que llegan por la API (etapa 7)
+MEDICIONES: dict = {}                            # para el informe (se imprimen al final)
 AIRFLOW_CLAVE = __import__("secrets").token_urlsafe(18)
 
 
@@ -419,9 +420,73 @@ def iniciado_en(contenedor: str) -> str:
     return run("docker", "inspect", "-f", "{{.State.StartedAt}}", cid).stdout.strip()
 
 
+class ObservadorModelo:
+    """Consulta /modelo cada 0,25 s y guarda la hora UTC (reloj del equipo) en que aparece
+    cada versión por primera vez."""
+
+    def __init__(self):
+        import threading
+        self.vistas: dict[str, float] = {}
+        self._parar = threading.Event()
+        self._hilo = threading.Thread(target=self._ciclo, daemon=True)
+        self._hilo.start()
+
+    def _ciclo(self):
+        while not self._parar.is_set():
+            _, m = http("GET", "/modelo", timeout=2)
+            if m and m.get("version") and m["version"] not in self.vistas:
+                self.vistas[m["version"]] = time.time()
+            self._parar.wait(0.25)
+
+    def detener(self):
+        self._parar.set()
+        self._hilo.join(5)
+
+
+def desfase_reloj() -> float:
+    """Reloj de PostgreSQL menos reloj del equipo (s), medido alrededor de una consulta."""
+    a = time.time()
+    pg = float(psql("SELECT EXTRACT(EPOCH FROM clock_timestamp())"))
+    b = time.time()
+    return pg - (a + b) / 2
+
+
+def iso(t: float) -> str:
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(t, timezone.utc).strftime("%H:%M:%S.%f")[:-3] + "Z"
+
+
+def linea_de_tiempo(id_: str, version: str, vista_api: float) -> None:
+    """Promoción (punto 1 de la revisión): del fin efectivo del entrenamiento a la API."""
+    d = desfase_reloj()
+    q = lambda sql: float(psql(sql)) - d                                  # noqa: E731 - a reloj del equipo
+    t0 = q(f"SELECT EXTRACT(EPOCH FROM iniciada_en) FROM tareas_reentrenamiento WHERE id = '{id_}'")
+    reclamada = q(f"SELECT EXTRACT(EPOCH FROM reclamada_en) FROM reclamaciones_reentrenamiento WHERE id = '{id_}'")
+    confirmada = q("SELECT EXTRACT(EPOCH FROM r.resuelta_en) FROM resoluciones_promocion r JOIN decisiones_promocion "
+                   f"dp USING (decision_id) WHERE dp.version = '{version}' AND r.resultado = 'confirmada'")
+    resultado = q(f"SELECT EXTRACT(EPOCH FROM terminado_en) FROM resultados_reentrenamiento WHERE id = '{id_}'")
+    v = next(x for x in versiones_mlflow() if x["version"] == version)
+    run = mlflow_json(f"/api/2.0/mlflow/runs/get?run_id={v['run_id']}")["run"]["info"]
+    fin_hijo = int(run["end_time"]) / 1000                                # servidor MLflow (mismo reloj)
+    marcas = [("t0 (marcar_inicio)", t0), ("reclamación (concesión tomada)", reclamada),
+              ("fin del entrenamiento (ejecución del candidato FINISHED en MLflow)", fin_hijo),
+              ("promoción confirmada en PostgreSQL", confirmada), ("resultado registrado (CLI)", resultado),
+              ("primera respuesta de /modelo con la versión nueva", vista_api)]
+    print(f"     desfase PostgreSQL − equipo: {d * 1000:+.0f} ms (descontado)")
+    for nombre, t in marcas:
+        print(f"     {iso(t)}  t0{t - t0:+8.1f} s  {nombre}")
+    MEDICIONES.update(promocion={"fin_entrenamiento_a_api_s": round(vista_api - fin_hijo, 1),
+                                 "confirmacion_a_api_s": round(vista_api - confirmada, 1),
+                                 "t0_a_api_s": round(vista_api - t0, 1)})
+    comprobar(0 <= vista_api - fin_hijo <= 120,
+              f"de fin del entrenamiento a la API: {vista_api - fin_hijo:.1f} s (≤ 120 s); "
+              f"de la confirmación en PostgreSQL a la API: {vista_api - confirmada:.1f} s")
+
+
 def reentrenamiento() -> list[str]:
     print("== Reentrenamiento con Airflow", flush=True)
     api_iniciada = iniciado_en("api")
+    observador = ObservadorModelo()
     s, r = http("POST", "/admin/reentrenar", cabeceras={"Idempotency-Key": "e2e-clave-1"})
     comprobar(s == 202 and set(r) == {"id"} and r["id"].startswith("nm-"), f"POST /admin/reentrenar → 202 {r}")
     id_ = r["id"]
@@ -449,11 +514,14 @@ def reentrenamiento() -> list[str]:
                       .get("state") == "success", 180, 3)
     comprobar(seg_dag is not None, "el DAG terminó success (resultado exitoso y reentrenar success)")
     if e["promovido"]:
-        seg = esperar(lambda: http("GET", "/modelo")[1].get("version") == e["version"], 120, 2)
+        seg = esperar(lambda: e["version"] in observador.vistas, 120, 0.5)
+        observador.detener()
         comprobar(seg is not None and iniciado_en("api") == api_iniciada,
-                  f"la API sirve la versión {e['version']} en {seg or 0:.0f} s sin reiniciarse (≤ 120 s)")
+                  f"la API sirve la versión {e['version']} sin reiniciarse")
+        linea_de_tiempo(id_, e["version"], observador.vistas[e["version"]])
         VIGENTE["version"] = e["version"]
     else:
+        observador.detener()
         comprobar(http("GET", "/modelo")[1]["version"] == VIGENTE["version"] == e["version"],
                   f"no promovido ({e['motivo'][:80]}): se sigue sirviendo la versión {VIGENTE['version']}")
 
@@ -493,6 +561,15 @@ def airflow_detenido(id_previo: str) -> None:
     dur = time.monotonic() - t
     comprobar(s == 503 and "detail" in (r or {}) and dur <= 10,
               f"POST /admin/reentrenar → 503 en {dur:.1f} s ({(r or {}).get('detail', '')[:70]})")
+    import re
+    m = re.findall(r"inicio sin confirmar: registro ([\d.]+) s, Airflow ([\d.]+) s", log("api"))
+    comprobar(bool(m), "la API registra la duración del inicio sin confirmar")
+    reg, af = map(float, m[-1])
+    MEDICIONES.update(airflow_caido={"post_total_s": round(dur, 2), "registro_s": reg, "airflow_s": af,
+                                     "fuera_de_la_cota_s": round(dur - af, 2)})
+    print(f"     POST total {dur:.2f} s = registro en PostgreSQL {reg:.2f} s + envío y confirmaciones {af:.2f} s "
+          f"+ resto (HTTP, hilo de la API) {dur - reg - af:.2f} s")
+    comprobar(af <= 8.0 + 0.3, f"envío y confirmaciones a Airflow: {af:.2f} s (cota 8 s)")
     comprobar(http("GET", f"/admin/reentrenar/{id_previo}")[0] == 200, "GET de una ejecución anterior → 200")
     seg = esperar(lambda: salud()[1] and salud()[1]["estado"] == "degradado", 60, 1)
     comprobar(seg is not None and "Airflow" in salud()[1].get("motivo", ""),
@@ -541,6 +618,7 @@ def main() -> int:
     finally:
         dc("down", "-v", "--remove-orphans", check=False)
         shutil.rmtree(TMP, ignore_errors=True)
+    print(f"\nMEDICIONES {json.dumps(MEDICIONES, ensure_ascii=False)}")
     print(f"\nVerificación del producto con Docker Compose: {len(RESULTADOS)} comprobaciones OK")
     return 0
 
