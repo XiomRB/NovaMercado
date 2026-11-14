@@ -126,6 +126,10 @@ def verificar_entorno(raiz: str, site_packages: str) -> None:
     if find_spec("airflow") is not None:
         problemas.append("airflow es importable desde el entorno de entrenamiento")
     if sys.prefix != sys.base_prefix:                # entorno virtual (imagen de Airflow)
+        if os.path.realpath(site_packages) != os.path.realpath(
+                os.path.join(sys.prefix, "lib", f"python{sys.version_info[0]}.{sys.version_info[1]}",
+                             "site-packages")):
+            problemas.append(f"site-packages fuera del entorno virtual: {site_packages}")
         cfg = os.path.join(sys.prefix, "pyvenv.cfg")
         with open(cfg, encoding="utf-8") as fh:
             lineas = [x.replace(" ", "").lower() for x in fh.read().splitlines()]
@@ -135,6 +139,19 @@ def verificar_entorno(raiz: str, site_packages: str) -> None:
         raise Rechazo("dependencias o aislamiento: " + "; ".join(problemas[:20]))
 
 
+def entorno_virtual() -> str | None:
+    """Con ``-S`` Python 3.11 no aplica el entorno virtual (lo hace ``site.venv``):
+    ``sys.prefix`` queda en la base. Si el intérprete es el de un entorno virtual
+    (``pyvenv.cfg`` junto a ``bin/``), se fija su prefijo como haría ``site``, para que
+    ``sysconfig`` dé su ``site-packages`` y nunca el de la base."""
+    raiz = os.path.dirname(os.path.dirname(sys.executable))
+    cfg = os.path.join(raiz, "pyvenv.cfg")
+    if not os.path.isfile(cfg):
+        return None
+    sys.prefix = sys.exec_prefix = raiz
+    return cfg
+
+
 def main(argv: list[str]) -> int:
     if not argv or argv[0] not in MODULOS:
         print(f"arranque verificado: módulo no permitido (permitidos: {', '.join(MODULOS)})", file=sys.stderr)
@@ -142,6 +159,7 @@ def main(argv: list[str]) -> int:
     if not (sys.flags.isolated and sys.flags.no_site):
         print("arranque verificado: debe ejecutarse con python -I -S", file=sys.stderr)
         return PROCEDENCIA
+    entorno_virtual()                                # antes de la primera llamada a sysconfig
     site_packages = sysconfig.get_paths()["purelib"]
     try:
         verificar_codigo(RAIZ)

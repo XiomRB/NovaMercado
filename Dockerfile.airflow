@@ -55,4 +55,6 @@ RUN chmod 0755 /opt/novamercado/docker/ejecutar \
 sys.exit('airflow es importable desde el entorno virtual' if u.find_spec('airflow') else 0)" \
  && test -z "$(find /opt/novamercado /usr/local/lib/python3.11 \( -name '*.pyc' -o -name '*.pyo' \) -print -quit)"
 
+# Directorio de trabajo de Airflow: el código del proyecto no queda en sys.path de Airflow
+WORKDIR /opt/airflow
 USER airflow
