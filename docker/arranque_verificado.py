@@ -29,7 +29,8 @@ import hashlib
 import json
 import os
 import sys
-import sysconfig
+
+# sysconfig NO se importa aquí: fija sus prefijos al importarse (ver entorno_virtual)
 
 PROCEDENCIA = 2
 MODULOS = ("app.modelo.reentrenar", "app.modelo.reconciliacion", "app.modelo.entrenar_mlflow",
@@ -142,8 +143,11 @@ def verificar_entorno(raiz: str, site_packages: str) -> None:
 def entorno_virtual() -> str | None:
     """Con ``-S`` Python 3.11 no aplica el entorno virtual (lo hace ``site.venv``):
     ``sys.prefix`` queda en la base. Si el intérprete es el de un entorno virtual
-    (``pyvenv.cfg`` junto a ``bin/``), se fija su prefijo como haría ``site``, para que
-    ``sysconfig`` dé su ``site-packages`` y nunca el de la base."""
+    (``pyvenv.cfg`` junto a ``bin/``), se fija su prefijo como haría ``site``, **antes**
+    de importar ``sysconfig`` (que copia los prefijos al importarse), para que dé su
+    ``site-packages`` y nunca el de la base."""
+    if "sysconfig" in sys.modules:
+        raise Rechazo("sysconfig ya estaba importado: no se puede fijar el entorno virtual")
     raiz = os.path.dirname(os.path.dirname(sys.executable))
     cfg = os.path.join(raiz, "pyvenv.cfg")
     if not os.path.isfile(cfg):
@@ -159,9 +163,10 @@ def main(argv: list[str]) -> int:
     if not (sys.flags.isolated and sys.flags.no_site):
         print("arranque verificado: debe ejecutarse con python -I -S", file=sys.stderr)
         return PROCEDENCIA
-    entorno_virtual()                                # antes de la primera llamada a sysconfig
-    site_packages = sysconfig.get_paths()["purelib"]
     try:
+        entorno_virtual()                            # antes de importar sysconfig
+        import sysconfig
+        site_packages = sysconfig.get_paths()["purelib"]
         verificar_codigo(RAIZ)
         verificar_entorno(RAIZ, site_packages)
     except Rechazo as exc:
