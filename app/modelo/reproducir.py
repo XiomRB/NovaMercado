@@ -11,6 +11,11 @@ Uso:  python -m app.modelo.reproducir --run-id <id>
      backtest igual;
    * ``no_reproduce``: cualquier otra cosa.
 
+4. Etapa 7: si la ejecución calculó R2 (manifiesto con ``campeon``), lo recalcula desde
+   la copia y el artefacto del campeón descargados (SHA de la decisión registrada) y lo
+   compara con ``r2/resultados_por_bloque.csv`` (enteros y fechas exactos, costos con
+   tolerancia 1e-9). Una diferencia es ``no_reproduce``.
+
 No registra nada ni toca el alias. Advierte si las bibliotecas o el commit del
 código actual difieren de los registrados.
 """
@@ -73,6 +78,58 @@ def comparar_predicciones(a: pd.DataFrame, b: pd.DataFrame) -> list[str]:
     return difs
 
 
+def diferencias_r2(tracking_uri: str, run_id: str, vt: dict, datos, manifiesto: dict, cfg, destino: Path) -> list[str]:
+    """Recalcula R2 (etapa 7). ``[]`` si la ejecución no lo calculó o lo registró como
+    ``no_disponible`` (no hay campeón que reproducir)."""
+    import json
+
+    from app.modelo import r2
+    campeon = manifiesto.get("campeon")
+    if not campeon or "sha256_r2" not in vt:
+        return []
+    if json.loads(vt.get("r2", "null")) == r2.NO_DISPONIBLE:
+        return []
+    from app.modelo.copia_datos import sha256
+    try:
+        crudo = Path(descargar_de_ejecucion(tracking_uri, run_id, f"{r2.RUTA_R2}/{r2.ARCHIVO_R2}",
+                                            str(destino / "reg"))).read_bytes()
+    except Exception as exc:  # noqa: BLE001
+        return [f"R2: no se pudo descargar la tabla registrada ({type(exc).__name__})"]
+    if sha256(crudo) != vt["sha256_r2"]:
+        return ["R2: la tabla registrada no coincide con sha256_r2"]
+    try:
+        p, corte_v = r2.obtener_campeon(tracking_uri, campeon, destino)
+    except r2.CampeonNoDisponible as exc:
+        return [f"R2: {exc}"]
+    if corte_v.strftime("%Y-%m-%d") != campeon.get("corte_v"):
+        return ["R2: el corte del campeón no coincide con el del manifiesto"]
+    try:
+        res = r2.calcular(datos, p, corte_v, cfg)
+    except ValueError as exc:
+        return [f"R2: {exc}"]
+    difs = r2.comparar(r2.leer_tabla_csv(crudo), res.por_bloque)
+    resultado = res.resultado if isinstance(res.resultado, str) else bool(res.resultado)
+    if json.loads(vt.get("r2", "null")) != resultado:
+        difs.append(f"R2: resultado registrado {vt.get('r2')} frente a {resultado}")
+    return difs
+
+
+def reproducir_r2(tracking_uri: str, nombre: str, version: str) -> list[str]:
+    """Solo R2 de una versión (para pruebas y diagnóstico)."""
+    configurar_cliente_mlflow()
+    from mlflow import MlflowClient
+    cliente = MlflowClient(tracking_uri=tracking_uri, registry_uri=tracking_uri)
+    mv = cliente.get_model_version(nombre, version)
+    run = cliente.get_run(mv.run_id)
+    with tempfile.TemporaryDirectory(prefix="nm_reproducir_r2_") as tmp:
+        tmp = Path(tmp)
+        datos, manifiesto = leer_copia(descargar_copia(tracking_uri, mv.run_id, tmp / "copia"),
+                                       run.data.tags["huella_datos"])
+        cfg, _ = config_desde_manifiesto(manifiesto)
+        with hilos_fijos(manifiesto.get("hilos_entrenamiento", HILOS_POR_DEFECTO)):
+            return diferencias_r2(tracking_uri, mv.run_id, dict(mv.tags or {}), datos, manifiesto, cfg, tmp / "r2")
+
+
 def reproducir(run_id: str, tracking_uri: str, cliente=None) -> ResultadoReproduccion:
     configurar_cliente_mlflow()
     from mlflow import MlflowClient
@@ -111,6 +168,7 @@ def reproducir(run_id: str, tracking_uri: str, cliente=None) -> ResultadoReprodu
         cfg, ev = config_desde_manifiesto(manifiesto)
         with hilos_fijos(manifiesto.get("hilos_entrenamiento", HILOS_POR_DEFECTO)):   # mismos hilos que el original
             difs = comparar_metricas(registrada, evaluar(datos, ev, cfg, modelos_de_manifiesto(manifiesto)).por_corte)
+            difs += diferencias_r2(tracking_uri, run_id, vt, datos, manifiesto, cfg, tmp / "r2")
             p, art = entrenar_definitivo(datos, cfg, mv.name)
         backtest_igual = not difs
         sha_rep = sha256_bytes(art.artefacto)

@@ -1,7 +1,8 @@
 """Orquestación del reentrenamiento (contrato ``/admin/reentrenar``).
 
-Etapa 4: no hay orquestador (Airflow llega en la etapa 7). ``iniciar`` no puede
-lanzar nada (la API responde 503) y ningún identificador existe (404).
+Etapa 4: no hay orquestador. ``iniciar`` no puede lanzar nada (la API responde 503)
+y ningún identificador existe (404). Etapa 7: ``app.orquestador_airflow`` con
+``ORQUESTADOR=airflow``.
 """
 
 from __future__ import annotations
@@ -16,8 +17,8 @@ class OrquestadorNoDisponible(RuntimeError):
 
 
 class Orquestador(Protocol):
-    def iniciar(self) -> str:
-        """Lanza una ejecución y devuelve su identificador."""
+    def iniciar(self, clave: str | None = None, cuerpo: bytes = b"") -> str:
+        """Lanza una ejecución y devuelve su identificador (``clave``: Idempotency-Key)."""
 
     def estado(self, id_ejecucion: str) -> EstadoReentrenamiento | None:
         """Estado de la ejecución, o ``None`` si el identificador no existe."""
@@ -28,7 +29,7 @@ class Orquestador(Protocol):
 class OrquestadorNoConfigurado:
     motivo = "el reentrenamiento no está disponible: el orquestador (Airflow) no está configurado"
 
-    def iniciar(self) -> str:
+    def iniciar(self, clave: str | None = None, cuerpo: bytes = b"") -> str:
         raise OrquestadorNoDisponible(self.motivo)
 
     def estado(self, id_ejecucion: str) -> EstadoReentrenamiento | None:

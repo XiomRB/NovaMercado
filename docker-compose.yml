@@ -1,4 +1,4 @@
-# NovaMercado — producto completo con Docker Compose (etapas 3, 5 y 6). Airflow: etapa 7.
+# NovaMercado — producto completo con Docker Compose (etapas 3, 5, 6 y 7).
 #
 # Uso:  cp .env.example .env        (y cambie las claves)
 #       coloque los archivos publicados en raw/   (ver README.md)
@@ -8,6 +8,9 @@
 # Arranque (DECISIONES.md §15): "preparar" migra y carga raw/ (una sola vez por
 # contenido), "entrenamiento-inicial" entrena y registra el primer modelo si
 # PostgreSQL todavía no tiene un vigente, y la "api" lo carga sola cuando aparece.
+# Etapa 7 (DECISIONES.md §16): "airflow-init" migra la base de Airflow y crea sus
+# usuarios; "airflow-scheduler" (LocalExecutor) ejecuta los DAG y "airflow-webserver"
+# expone la API REST que usa POST /admin/reentrenar.
 
 name: novamercado
 
@@ -31,11 +34,51 @@ x-entorno-aplicacion: &entorno-aplicacion
   MLFLOW_HTTP_REQUEST_MAX_RETRIES: ${MLFLOW_HTTP_REQUEST_MAX_RETRIES:-0}
   HILOS_ENTRENAMIENTO: ${HILOS_ENTRENAMIENTO:-1}
 
+# Claves de los roles de la etapa 7 (app/db/roles.py): nm_cierre escribe resultados de
+# reentrenamiento; nm_vigilante solo lo usa la tarea vigilante del DAG.
+x-claves-roles: &claves-roles
+  NM_CIERRE_PASSWORD: ${NM_CIERRE_PASSWORD:?defina NM_CIERRE_PASSWORD en .env}
+  NM_VIGILANTE_PASSWORD: ${NM_VIGILANTE_PASSWORD:?defina NM_VIGILANTE_PASSWORD en .env}
+
 x-aplicacion: &aplicacion
   build:
     context: .
   image: novamercado-app:local
   environment: *entorno-aplicacion
+
+# Imagen y configuración de Airflow (etapa 7). La URL de su base se arma con las claves
+# escapadas (sql_alchemy_conn_cmd), así admite cualquier carácter. Sin salto de línea
+# final: Airflow no recorta la salida del comando.
+x-entorno-airflow: &entorno-airflow
+  AIRFLOW_DB_NAME: ${AIRFLOW_DB_NAME:?defina AIRFLOW_DB_NAME en .env}
+  AIRFLOW_DB_USER: ${AIRFLOW_DB_USER:?defina AIRFLOW_DB_USER en .env}
+  AIRFLOW_DB_PASSWORD: ${AIRFLOW_DB_PASSWORD:?defina AIRFLOW_DB_PASSWORD en .env}
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN_CMD: >-
+    python -c "import os, urllib.parse as u; e = os.environ; q = lambda v: u.quote(e[v], safe='');
+    print(f'postgresql+psycopg2://{q(\"AIRFLOW_DB_USER\")}:{q(\"AIRFLOW_DB_PASSWORD\")}@airflow-db:5432/{q(\"AIRFLOW_DB_NAME\")}', end='')"
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?defina AIRFLOW_FERNET_KEY en .env}
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+  AIRFLOW__CORE__PARALLELISM: "8"
+  AIRFLOW__CORE__KILLED_TASK_CLEANUP_TIME: "15"
+  AIRFLOW__SCHEDULER__SCHEDULER_HEARTBEAT_SEC: "5"
+  AIRFLOW__SCHEDULER__SCHEDULER_IDLE_SLEEP_TIME: "1"
+  AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "30"
+  AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
+  AIRFLOW__WEBSERVER__WORKERS: "2"
+  AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:?defina AIRFLOW_SECRET_KEY en .env}
+  AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "false"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+x-airflow: &airflow
+  build:
+    context: .
+    dockerfile: Dockerfile.airflow
+  image: novamercado-airflow:local
+  environment: *entorno-airflow
+  volumes:
+    - airflow_logs:/opt/airflow/logs
 
 services:
   # Base de datos del PRODUCTO: solicitudes, predicciones, observaciones y datos publicados.
@@ -99,7 +142,9 @@ services:
   # de raw/ (por SHA-256; si raw/ falta pero los datos ya están cargados, se omite).
   preparar:
     <<: *aplicacion
-    command: ["sh", "-c", "alembic upgrade head && python -m app.db.carga --raw /datos/raw"]
+    command: ["sh", "-c", "alembic upgrade head && python -m app.db.roles && python -m app.db.carga --raw /datos/raw"]
+    environment:
+      <<: [*entorno-aplicacion, *claves-roles]
     volumes:
       - ${RAW_DIR:-./raw}:/datos/raw:ro
     depends_on:
@@ -109,9 +154,10 @@ services:
 
   # Una sola ejecución en cada "up": si PostgreSQL ya tiene un vigente confirmado, termina
   # en segundos sin entrenar; si no, entrena el primero (o el respaldo baseline).
+  # E7-14: a través del lanzador y el arranque verificado (procedencia antes de importar).
   entrenamiento-inicial:
     <<: *aplicacion
-    command: ["python", "-m", "app.modelo.arranque"]
+    command: ["/app/docker/ejecutar", "arranque"]
     depends_on:
       preparar:
         condition: service_completed_successfully
@@ -129,6 +175,12 @@ services:
       MODELO_INTERVALO_REFRESCO: ${MODELO_INTERVALO_REFRESCO:-15}
       SALUD_INTERVALO: ${SALUD_INTERVALO:-10}
       SALUD_LIMITE: ${SALUD_LIMITE:-3}
+      # Etapa 7: POST /admin/reentrenar → API REST de Airflow; la recuperación escribe con nm_cierre
+      ORQUESTADOR: airflow
+      AIRFLOW_URL: http://airflow-webserver:8080
+      AIRFLOW_API_USUARIO: ${AIRFLOW_API_USUARIO:?defina AIRFLOW_API_USUARIO en .env}
+      AIRFLOW_API_CLAVE: ${AIRFLOW_API_CLAVE:?defina AIRFLOW_API_CLAVE en .env}
+      NM_CIERRE_PASSWORD: ${NM_CIERRE_PASSWORD:?defina NM_CIERRE_PASSWORD en .env}
     volumes:
       - modelo_cache:/app/modelos/cache
     ports:
@@ -151,7 +203,75 @@ services:
       start_period: 600s
     restart: unless-stopped
 
+  # ------------------------------------------------------------------ Airflow (etapa 7)
+  airflow-init:
+    <<: *airflow
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -eu
+        airflow db migrate
+        airflow sync-perm                 # crea los roles predefinidos (Op, User, ...)
+        crear() {
+          if airflow users list -o plain 2>/dev/null | awk '{print $$2}' | grep -qx "$$1"; then
+            echo "usuario $$1 ya existe"
+          else
+            airflow users create --username "$$1" --password "$$2" --role "$$3" \
+              --firstname NovaMercado --lastname "$$3" --email "$$1@novamercado.invalid"
+          fi
+        }
+        crear "$$AIRFLOW_ADMIN_USUARIO" "$$AIRFLOW_ADMIN_CLAVE" Admin
+        crear "$$AIRFLOW_API_USUARIO" "$$AIRFLOW_API_CLAVE" Op
+    environment:
+      <<: *entorno-airflow
+      AIRFLOW_ADMIN_USUARIO: ${AIRFLOW_ADMIN_USUARIO:?defina AIRFLOW_ADMIN_USUARIO en .env}
+      AIRFLOW_ADMIN_CLAVE: ${AIRFLOW_ADMIN_CLAVE:?defina AIRFLOW_ADMIN_CLAVE en .env}
+      AIRFLOW_API_USUARIO: ${AIRFLOW_API_USUARIO:?defina AIRFLOW_API_USUARIO en .env}
+      AIRFLOW_API_CLAVE: ${AIRFLOW_API_CLAVE:?defina AIRFLOW_API_CLAVE en .env}
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+    restart: "no"
+
+  # Ejecuta las tareas (LocalExecutor): necesita las credenciales del producto (la CLI y
+  # marcar_inicio), las de nm_cierre (registrar_resultado) y nm_vigilante (vigilante).
+  airflow-scheduler:
+    <<: *airflow
+    command: ["scheduler"]
+    environment:
+      <<: [*entorno-airflow, *entorno-aplicacion, *claves-roles]
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname \"$${HOSTNAME}\""]
+      interval: 15s
+      timeout: 15s
+      retries: 10
+      start_period: 60s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      preparar:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  airflow-webserver:
+    <<: *airflow
+    command: ["webserver"]
+    ports:
+      # Por defecto solo en 127.0.0.1 (interfaz y API REST con autenticación básica)
+      - "${AIRFLOW_DIRECCION_PUBLICACION:-127.0.0.1}:${AIRFLOW_PUERTO_HOST:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
 volumes:
+  airflow_logs:
   db_producto:
   db_airflow:
   mlflow_datos:

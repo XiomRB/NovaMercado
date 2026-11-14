@@ -109,6 +109,70 @@ jobs:
           path: reportes-ci/
           retention-days: 14
 
+  airflow:
+    name: DAG con Airflow 2.10.5
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16.14-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements/*.txt
+      - name: Base de prueba migrada con los roles (entorno de la aplicación)
+        env:
+          DATABASE_URL: postgresql+psycopg2://postgres@localhost:5432/nm_airflow
+          NM_CIERRE_PASSWORD: clave-cierre-ci
+          NM_VIGILANTE_PASSWORD: clave-vigilante-ci
+        run: |
+          pip install -r requirements/dev.txt
+          psql -h localhost -U postgres -c "CREATE DATABASE nm_airflow"
+          alembic upgrade head
+          python -m app.db.roles
+      - name: Airflow 2.10.5 con sus constraints oficiales (entorno propio, sin el proyecto)
+        run: |
+          python -m venv /tmp/airflow-venv
+          /tmp/airflow-venv/bin/pip install "apache-airflow==2.10.5" "apache-airflow-providers-postgres" pytest \
+            --constraint https://raw.githubusercontent.com/apache/airflow/constraints-2.10.5/constraints-3.11.txt
+      - name: pytest tests/orquestacion (DagBag, estructura y tareas SQL contra PostgreSQL)
+        env:
+          AIRFLOW_HOME: /tmp/airflow-home
+          AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+          NM_PRUEBA_DB: "1"
+          DB_HOST: localhost
+          DB_PORT: "5432"
+          POSTGRES_DB: nm_airflow
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ""
+          NM_CIERRE_PASSWORD: clave-cierre-ci
+          NM_VIGILANTE_PASSWORD: clave-vigilante-ci
+        run: |
+          /tmp/airflow-venv/bin/python -m pytest tests/orquestacion --confcutdir=tests/orquestacion -q \
+            --junitxml=reportes-ci/airflow.xml
+          test "$(grep -o 'skipped="[0-9]*"' reportes-ci/airflow.xml | head -1)" = 'skipped="0"'
+      - name: Resumen
+        if: always()
+        run: python .github/scripts/resumen_junit.py reportes-ci/airflow.xml "DAG con Airflow" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: junit-airflow
+          path: reportes-ci/
+          retention-days: 14
+
   persistencia:
     name: Persistencia con Docker Compose
     runs-on: ubuntu-24.04
@@ -130,7 +194,7 @@ jobs:
   producto:
     name: Producto con Docker Compose (extremo a extremo)
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
@@ -142,13 +206,13 @@ jobs:
         run: pip install -r requirements/dev.txt
       - name: Verificar que no se usan datos locales
         run: test ! -e raw
-      - name: Imagen, arranque desde cero, contrato, reinicios, MLflow caído, E-ANT y procedencia
+      - name: Imágenes, arranque desde cero, contrato, reinicios, MLflow caído, E-ANT, procedencia y reentrenamiento con Airflow
         run: bash scripts/verificar_producto_docker.sh
 
   resultado:
     name: CI resultado
     if: always()
-    needs: [calidad, pruebas, integracion, persistencia, producto]
+    needs: [calidad, pruebas, integracion, airflow, persistencia, producto]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

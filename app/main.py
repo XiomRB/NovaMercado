@@ -21,6 +21,7 @@ from app.db.conexion import BaseDatosNoDisponible
 from app.dependencias import Dependencias, desde_entorno
 from app.modelo.proveedores import ModeloNoDisponible
 from app.orquestador import OrquestadorNoDisponible
+from app.orquestador_airflow import ClaveInvalida
 from app.schemas.contrato import EstadoReentrenamiento, EstadoSalud, ModeloVigente, ReentrenamientoAceptado
 from app.servicios.observaciones import observar
 from app.servicios.prediccion import predecir
@@ -119,10 +120,14 @@ def create_app(dependencias: Dependencias | None = None, iniciar_hilos: bool = T
     @app.post("/admin/reentrenar", status_code=202)
     async def admin_reentrenar(request: Request):
         d = deps(request)
+        cuerpo = await request.body()
+        clave = request.headers.get("idempotency-key")
         try:
-            id_ejecucion = await run_in_threadpool(d.orquestador.iniciar)
+            id_ejecucion = await run_in_threadpool(d.orquestador.iniciar, clave, cuerpo)
         except OrquestadorNoDisponible as exc:
             return JSONResponse(status_code=503, content={"detail": str(exc)})
+        except ClaveInvalida as exc:                   # Idempotency-Key (etapa 7)
+            return JSONResponse(status_code=422, content={"detail": str(exc)})
         return ReentrenamientoAceptado(id=str(id_ejecucion)).model_dump()
 
     @app.get("/admin/reentrenar/{id_ejecucion}")

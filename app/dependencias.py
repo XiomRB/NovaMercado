@@ -36,8 +36,10 @@ class Dependencias:
     def iniciar(self) -> None:
         self.gestor.iniciar()
         self.monitor.iniciar()
+        getattr(self.orquestador, "iniciar_hilos", lambda: None)()     # recuperación (etapa 7)
 
     def detener(self) -> None:
+        getattr(self.orquestador, "detener_hilos", lambda: None)()
         self.monitor.detener()
         self.gestor.detener()
         if self.motor is not None:
@@ -86,6 +88,17 @@ def construir_gestor(proveedor, intervalo: float):
     return GestorModelo(proveedor, intervalo=intervalo)
 
 
+def construir_orquestador(motor):
+    """``ORQUESTADOR=airflow`` (producto, etapa 7) u orquestador no configurado."""
+    from app.config import config_airflow, orquestador_configurado
+    if orquestador_configurado() != "airflow":
+        return OrquestadorNoConfigurado()
+    from app.config import parametros_rol
+    from app.orquestador_airflow import OrquestadorAirflow
+    return OrquestadorAirflow(motor, config_airflow(), nombre_modelo=mlflow_modelo_nombre(),
+                              parametros_cierre=lambda: parametros_rol("nm_cierre", "NM_CIERRE_PASSWORD"))
+
+
 def desde_entorno() -> Dependencias:
     from app.db.conexion import crear_motor
     from app.servicios.persistencia import PersistenciaPostgres
@@ -93,6 +106,6 @@ def desde_entorno() -> Dependencias:
     motor = crear_motor()
     persistencia = PersistenciaPostgres(motor)
     gestor = construir_gestor(construir_proveedor(motor), segundos("MODELO_INTERVALO_REFRESCO", 15))
-    orquestador = OrquestadorNoConfigurado()
+    orquestador = construir_orquestador(motor)
     monitor = construir_monitor(persistencia, gestor, orquestador)
     return Dependencias(persistencia, gestor, monitor, orquestador, motor)
