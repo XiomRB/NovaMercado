@@ -296,6 +296,13 @@ python -m simulador ejecutar --escenario corto        # 14 días sintéticos (lo
   `evidencia.sha256`; solo `borrar-evidencia --confirmar` la elimina).
 * Código de salida 0 si se cumplen todos los criterios; 1 si alguno falla (ver
   `trabajo/informe/resumen.md`). El escenario `cambio_demanda` es opcional e independiente.
+* **Memoria:** para la simulación completa de 90 días se recomienda asignar unos **6 GB** a
+  WSL o Docker (en Windows, `memory=6GB` en `%USERPROFILE%\.wslconfig` y `wsl --shutdown`).
+  Es la configuración con la que se obtuvo la ejecución satisfactoria, no un mínimo
+  garantizado: con 3,9 GB el equipo agotó el swap y las dos reproducciones fallaron por
+  bloqueos del entorno (ver `reportes/simulacion/LEEME.md`).
+* **Evidencia de la entrega:** `reportes/simulacion/` (informe agregado de la ejecución
+  aceptada, sin ventas reales).
 
 ## Experimento de modelos (etapa 2)
 

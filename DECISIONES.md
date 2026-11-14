@@ -1327,7 +1327,10 @@ cantidades (venta esperada con tolerancia 1e-9).
   (`-m compose`) con `docker compose config` en el job de persistencia.
 * CI "Simulación corta (sintética)": `scripts/verificar_simulador_docker.sh` (I5–I7).
 * Ejecución completa local: informe en `reportes/simulacion/` (S5: solo agregados y
-  ejemplos de predicción, sin ventas reales).
+  ejemplos de predicción, sin ventas reales). Ejecución aceptada `d14fdcfe` (11 de 11) con
+  6 GB para WSL; las dos anteriores, con 3,9 GB, fallaron por bloqueos del entorno
+  relacionados con la memoria (`reportes/simulacion/LEEME.md`). Sin cambios en el producto ni en los
+  criterios.
 
 ## Pendientes de decidir (etapas siguientes)
 
