@@ -7,13 +7,14 @@ producto, sugiere la cantidad a tener disponible según el costo de faltantes y
 sobrantes, se defiende de datos defectuosos, registra la operación y se
 reentrena automáticamente.
 
-> **Estado:** etapas 0–5 integradas (calidad de datos, contrato, modelos,
-> backtesting, persistencia, CI, API y MLflow). Etapa 6 (producto con Docker
-> Compose y arranque automático) en revisión. Airflow llega en la etapa 7.
+> **Estado:** etapas 0–6 integradas (calidad de datos, contrato, modelos,
+> backtesting, persistencia, CI, API, MLflow y producto con Docker Compose).
+> Etapa 7 (reentrenamiento con Airflow) en revisión.
 
-## Levantar el producto desde cero (etapa 6)
+## Levantar el producto desde cero (etapas 6 y 7)
 
-Requiere Docker con Compose v2 (memoria recomendada para Docker: 4 GB o más).
+Requiere Docker con Compose v2 (memoria recomendada para Docker: 6 GB o más; Airflow
+suma ~1,5 GB).
 
 ```bash
 git clone https://github.com/XiomRB/NovaMercado.git && cd NovaMercado   # clonar (no descargar un ZIP)
@@ -29,7 +30,12 @@ docker compose up -d --build
   sin entrenar. Progreso: `docker compose logs -f entrenamiento-inicial`.
 * **`api`** (http://127.0.0.1:8000) arranca de inmediato con `/health` en 503
   (sin modelo) y carga el primer modelo sola cuando se confirma. Tiempo hasta
-  `/health` `ok`: unos minutos (límite del enunciado: 10).
+  `/health` `ok` (API, base de datos, MLflow, Airflow y modelo): unos minutos
+  (límite del enunciado: 10).
+* **Airflow** (etapa 7): `airflow-init` migra su base y crea los usuarios de `.env`;
+  `airflow-scheduler` ejecuta los DAG y `airflow-webserver` (http://127.0.0.1:8080,
+  usuario `AIRFLOW_ADMIN_USUARIO`) expone la API REST que usa
+  `POST /admin/reentrenar`. Genere `AIRFLOW_FERNET_KEY` como indica `.env.example`.
 * `docker compose stop`/`start` o `down`/`up` **sin `-v`** conservan los datos,
   el registro de MLflow y el modelo (`docker compose down -v` los borra).
 * Acceso desde otra máquina: `API_DIRECCION_PUBLICACION=0.0.0.0` en `.env`
@@ -44,6 +50,7 @@ docker compose up -d --build
 | `preparar` termina con "cambió desde que se cargó" | `raw/` tiene otro contenido que el ya cargado; no se mezclan versiones (restaure los archivos originales) |
 | `entrenamiento-inicial` sale con código 2 | la imagen se construyó con cambios sin confirmar: confirme o descarte los cambios y `docker compose build` |
 | `/health` sigue en 503 | `docker compose logs entrenamiento-inicial` (código 3: ningún modelo superó las validaciones) |
+| `/health` degradado con "Airflow no disponible" | `docker compose logs airflow-init airflow-scheduler airflow-webserver` (¿falta o es inválida `AIRFLOW_FERNET_KEY`?) |
 
 ## Arquitectura (etapas 5 y 6)
 
@@ -59,7 +66,11 @@ docker compose up -d --build
  entrenamiento-inicial / entrenar_mlflow:
    supervisor (concesión) ─► hijo: copia inmutable → backtest + criterio → registra "pendiente" → T3/T4a/T4b
    supervisor: decisión en PostgreSQL → tags y alias en MLflow → confirmación en PostgreSQL
- preparar: migraciones + carga de raw/          airflow-db (separada; etapa 7)
+ preparar: migraciones + roles + carga de raw/
+ POST /admin/reentrenar ─► api: registra la solicitud ─► Airflow (REST) ─► DAG novamercado_reentrenamiento:
+   marcar_inicio (t0) → reentrenar (lanzador → arranque verificado → supervisor + hijo, R2, si_mejora)
+   → registrar_resultado → vigilante          airflow-db: base propia de Airflow
+ GET /admin/reentrenar/{id} ─► api: lee el resultado en PostgreSQL (y cierra lo vencido)
 ```
 
 ## Datos publicados
@@ -100,7 +111,7 @@ con su volumen persistente:
 | Servicio | Uso | Volumen |
 |---|---|---|
 | `db` | base del producto (solicitudes, predicciones, observaciones, datos publicados) | `db_producto` |
-| `airflow-db` | base de Airflow (se usará en la etapa 7) | `db_airflow` |
+| `airflow-db` | base de Airflow (etapa 7) | `db_airflow` |
 
 ```bash
 cp .env.example .env              # y cambie las claves; .env no se versiona
@@ -122,8 +133,8 @@ Diseño de tablas, claves, restricciones e idempotencia: `DECISIONES.md` §11.
 ## MLflow (etapas 5 y 6)
 
 ```bash
-# en el producto, dentro del contenedor (procedencia de la imagen):
-docker compose run --rm entrenamiento-inicial python -m app.modelo.entrenar_mlflow --promover siempre
+# en el producto, dentro del contenedor (lanzador y arranque verificado, etapa 7):
+docker compose run --rm entrenamiento-inicial /app/docker/ejecutar entrenar_mlflow --promover siempre
 # o desde el equipo (repositorio limpio):
 docker compose up -d --wait db airflow-db mlflow     # UI en http://localhost:5000
 set -a && . ./.env && set +a
@@ -167,7 +178,8 @@ python -m app.modelo.entrenar_mlflow
 | `POST /v1/observaciones` | registro idempotente (`registros_guardados` = nuevos + modificados) |
 | `GET /modelo` | modelo que usa el servicio: `nombre`, `alias`, `version`; campos agregados (etapa 6): `es_vigente`, `estado_vigencia` (`vigente`, `actualizando`, `anterior`, `sin_verificar`), `version_vigente` (vigente observado; ausente en `sin_verificar`) y `motivo` |
 | `GET /health` | `ok` / `degradado` + `motivo` (200); 503 sin modelo |
-| `POST /admin/reentrenar`, `GET /admin/reentrenar/{id}` | 503 / 404 hasta la etapa 7 (Airflow) |
+| `POST /admin/reentrenar` | 202 con `id` (etapa 7); encabezado opcional `Idempotency-Key` (misma clave → mismo id; inválida o con otra solicitud → 422); 503 si no se puede registrar o Airflow no confirma el inicio |
+| `GET /admin/reentrenar/{id}` | `en_curso` → `exitoso`/`fallido` con `promovido`, `version` (vigente al terminar) y `motivo`; 404 si no existe |
 
 * La API **no entrena al iniciar**: sin modelo responde 503 en
   `/v1/prediccion` y `/health`. Un modelo nuevo (alias movido o artefacto
@@ -179,6 +191,28 @@ python -m app.modelo.entrenar_mlflow
   5 s, en el servidor; +`DB_MARGEN_CLIENTE` en el cliente): ninguna solicitud
   queda esperando indefinidamente.
 * Documentación interactiva: `http://localhost:8000/docs`.
+
+## Reentrenamiento con Airflow (etapa 7)
+
+```bash
+curl -X POST -H 'Idempotency-Key: mi-clave-1' http://127.0.0.1:8000/admin/reentrenar   # {"id": "nm-…"}
+curl http://127.0.0.1:8000/admin/reentrenar/nm-…   # {"estado": "en_curso"} … luego exitoso o fallido
+```
+
+* El DAG `novamercado_reentrenamiento` corre con `max_active_runs=1`: las solicitudes
+  se encolan y nunca se solapan (además, la concesión de la etapa 6 excluye cualquier
+  otro entrenamiento). El plazo de 10 min cuenta desde que empieza la tarea (t0).
+* Reemplazo del vigente (**R2**): el candidato debe superar las validaciones de
+  siempre (T1–T4b, C1–C3) **y** costar lo mismo o menos que el vigente congelado en
+  los días posteriores a su corte (como mucho 28, al menos 7). Si el vigente es un
+  respaldo baseline basta C1–C3. El motivo informa los dos costos.
+* `exitoso` = el entrenamiento terminó (promovido o no); `fallido` = no terminó
+  (error, tiempo límite, otro entrenamiento en curso, procedencia). Un fallo nunca
+  cambia el vigente. Una promoción se activa en la API sin reiniciar.
+* El DAG `novamercado_reconciliacion` (cada 5 min) mantiene el alias de MLflow
+  alineado con el vigente de PostgreSQL.
+* Diseño completo (roles de PostgreSQL, plazos, vigilante, arranque verificado):
+  `DECISIONES.md` §16.
 
 ## Pruebas
 
@@ -210,9 +244,10 @@ abrirlo y con cada push a su rama) y en cada push a `main`:
 |---|---|
 | Formato y calidad (ruff) | `ruff check .` (reglas en `pyproject.toml`) |
 | Pruebas unitarias y de regresión | toda la suite sin base de datos (etapas 1–3), sin `raw/` |
-| Pruebas de integración (PostgreSQL) | migraciones up/down/up y `pytest -m integracion` contra un PostgreSQL 16 de servicio |
+| Pruebas de integración (PostgreSQL) | migraciones up/down/up y `pytest -m integracion` contra un PostgreSQL 16 de servicio (incluye roles, vigilante y reentrenamiento con MLflow real) |
+| DAG con Airflow 2.10.5 | `tests/orquestacion` en un entorno con Airflow y sus *constraints*: `DagBag`, estructura del DAG y tareas SQL contra PostgreSQL |
 | Persistencia con Docker Compose | `scripts/verificar_persistencia_docker.sh` |
-| Producto con Docker Compose (extremo a extremo) | `scripts/verificar_producto_docker.sh`: imagen (sin datos ni bytecode, procedencia del commit, dependencias del lock), arranque desde cero con datos sintéticos hasta `ok`, contrato, reinicios sin entrenar de nuevo, MLflow caído y de vuelta, E-ANT y procedencia que no coincide |
+| Producto con Docker Compose (extremo a extremo) | `scripts/verificar_producto_docker.sh`: imagen (sin datos ni bytecode, procedencia del commit, dependencias del lock), arranque desde cero con datos sintéticos hasta `ok`, contrato, reinicios sin entrenar de nuevo, MLflow caído y de vuelta, E-ANT, procedencia que no coincide y (etapa 7) imagen de Airflow, reentrenamiento por la API, cola, fallo forzado, Airflow caído y arranque verificado |
 | **CI resultado** | aprueba solo si todos los anteriores aprobaron; es el check obligatorio para fusionar |
 
 El workflow no contiene credenciales: el PostgreSQL de servicio usa
@@ -255,10 +290,12 @@ app/
   servicios/      predicción, observaciones, rechazos, interfaz de persistencia
   main.py         FastAPI (endpoints y manejo de errores)
   salud.py        monitor de salud en segundo plano
-  orquestador.py  interfaz del reentrenamiento (Airflow en la etapa 7)
+  orquestador.py  interfaz del reentrenamiento; orquestador_airflow.py (etapa 7)
   config.py       configuración por variables de entorno
 ml/               variables, modelos, costo y cantidad sugerida, backtesting
-migraciones/      Alembic (0001 esquema inicial, 0002 concesión y promociones)
+migraciones/      Alembic (0001 esquema inicial, 0002 concesión y promociones, 0003 reentrenamientos)
+dags/             DAG de Airflow (reentrenamiento y reconciliación) y nm_cierre.py (copia de app/db/cierre.py)
+docker/           lanzador (ejecutar) y arranque verificado de los comandos que entrenan
 scripts/          experimento, verificación de persistencia, pruebas locales
 reportes/etapa2/  resultados del backtesting
 requirements/     comun.txt, api.txt, dev.txt (versiones fijas) y api.lock.txt (todas, con hashes)

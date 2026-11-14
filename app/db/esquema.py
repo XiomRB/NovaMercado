@@ -287,3 +287,66 @@ resoluciones_promocion = Table(
 
 # Constante propia: la migración 0001 importa TABLAS_SOLO_INSERCION y no debe cambiar.
 TABLAS_SOLO_INSERCION_PROMOCION = ("decisiones_promocion", "resoluciones_promocion")
+
+# ------------------------------------------------------- reentrenamientos (etapa 7)
+# DECISIONES.md §16. Todas de solo inserción. Las operaciones que deciden el destino
+# de una solicitud (registro del inicio, reclamación, cierres y veredicto) empiezan
+# con SELECT … FROM solicitudes_reentrenamiento WHERE id = :id FOR UPDATE: un
+# bloqueo, no una modificación (el trigger rechaza cualquier UPDATE real).
+ESTADOS_REENTRENAMIENTO = ("exitoso", "fallido")
+ORIGENES_REENTRENAMIENTO = ("api", "airflow")
+ID_REENTRENAMIENTO_RE = "^[A-Za-z0-9_.:+-]{1,250}$"
+
+
+solicitudes_reentrenamiento = Table(
+    "solicitudes_reentrenamiento", metadata,
+    Column("id", Text, primary_key=True),
+    Column("clave_idempotencia", Text, nullable=True),
+    Column("huella_solicitud", String(64), nullable=True),
+    Column("solicitado_en", DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()),
+    Column("origen", Text, nullable=False),
+    CheckConstraint(f"id ~ '{ID_REENTRENAMIENTO_RE}'", name="id_valido"),
+    CheckConstraint("clave_idempotencia IS NULL OR clave_idempotencia ~ '^[A-Za-z0-9_-]{1,128}$'",
+                    name="clave_valida"),
+    CheckConstraint("(clave_idempotencia IS NULL) = (huella_solicitud IS NULL)", name="clave_con_huella"),
+    CheckConstraint(_en("origen", ORIGENES_REENTRENAMIENTO), name="origen_valido"),
+    UniqueConstraint("clave_idempotencia"),
+)
+
+tareas_reentrenamiento = Table(
+    "tareas_reentrenamiento", metadata,
+    Column("id", Text, ForeignKey("solicitudes_reentrenamiento.id"), primary_key=True),
+    Column("iniciada_en", DateTime(timezone=True), nullable=False),     # t0 = clock_timestamp()
+)
+
+reclamaciones_reentrenamiento = Table(
+    "reclamaciones_reentrenamiento", metadata,
+    Column("id", Text, ForeignKey("solicitudes_reentrenamiento.id"), primary_key=True),
+    Column("reclamada_en", DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()),
+    Column("epoca", BigInteger, nullable=False),
+    CheckConstraint("epoca > 0", name="epoca_positiva"),
+)
+
+resultados_reentrenamiento = Table(
+    "resultados_reentrenamiento", metadata,
+    Column("id", Text, ForeignKey("solicitudes_reentrenamiento.id"), primary_key=True),
+    Column("estado", Text, nullable=False),
+    Column("promovido", Boolean, nullable=False),
+    Column("version", Text, nullable=True),          # vigente al terminar (NULL: no había vigente)
+    Column("motivo", Text, nullable=False),
+    Column("escrito_por", Text, nullable=False),
+    Column("terminado_en", DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()),
+    CheckConstraint(_en("estado", ESTADOS_REENTRENAMIENTO), name="estado_valido"),
+)
+
+veredictos_reentrenamiento = Table(
+    "veredictos_reentrenamiento", metadata,
+    Column("id", Text, ForeignKey("solicitudes_reentrenamiento.id"), primary_key=True),
+    Column("veredicto", Text, nullable=False),
+    Column("decidido_en", DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()),
+    CheckConstraint("veredicto = 'sin_resultado'", name="veredicto_valido"),
+)
+
+TABLAS_SOLO_INSERCION_REENTRENAMIENTO = ("solicitudes_reentrenamiento", "tareas_reentrenamiento",
+                                         "reclamaciones_reentrenamiento", "resultados_reentrenamiento",
+                                         "veredictos_reentrenamiento")

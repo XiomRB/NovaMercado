@@ -170,6 +170,25 @@ def _anular(c: ConcesionEntrenamiento, cliente, decision_id: int, nombre: str, v
     _marcar_invalida(c, cliente, nombre, version, motivo)
 
 
+def decidir_si_mejora(c: ConcesionEntrenamiento, r: ResultadoRegistro, vigente) -> tuple[bool, str]:
+    """Modo ``si_mejora`` (etapa 7, R2): sin vigente se promueve un candidato válido; con
+    un vigente normal, solo si R2 es ``true`` y se calculó contra **ese** vigente (misma
+    decisión de PostgreSQL); con un vigente ``respaldo_baseline`` (origen
+    ``arranque_respaldo`` en PostgreSQL) basta T1–T4b y C1–C3 (E7-6b), y R2 solo se informa."""
+    if vigente is None:
+        return True, f"{r.motivo}; no había vigente"
+    r2 = r.r2 or {}
+    if r2.get("decision_id") is None or int(r2["decision_id"]) != vigente.decision_id:
+        return False, (f"R2 no se calculó contra el vigente actual (decisión {vigente.decision_id}); "
+                       f"{r2.get('motivo', 'sin R2')}")
+    texto = r2.get("motivo") or "R2 sin motivo"
+    if c.origen_de_decision(vigente.decision_id) == "arranque_respaldo":
+        return True, f"el vigente es un respaldo baseline y el candidato cumple C1–C3; {texto}"
+    if r2.get("resultado") is True and r.condiciones.get("R2") is True:
+        return True, texto
+    return False, texto
+
+
 def autorizar_y_promover(c: ConcesionEntrenamiento, cliente, r: ResultadoRegistro, *, nombre: str, alias: str,
                          promover: str, origen: str) -> ResultadoPromocion:
     """Única función que escribe ``estado=valido`` y decide promociones (§5.4)."""
@@ -182,12 +201,19 @@ def autorizar_y_promover(c: ConcesionEntrenamiento, cliente, r: ResultadoRegistr
         return ResultadoPromocion(False, False, r.version, motivo_rechazo)
 
     vigente = c.leer_vigente(nombre)
-    promover_ahora = promover == "siempre" or (promover == "si_no_hay" and vigente is None)
+    motivo_mejora = None
+    if promover == "si_mejora":
+        promover_ahora, motivo_mejora = decidir_si_mejora(c, r, vigente)
+    else:
+        promover_ahora = promover == "siempre" or (promover == "si_no_hay" and vigente is None)
     if not promover_ahora:
         c.verificar()
         cliente.set_model_version_tag(nombre, r.version, "estado", "valido")
         c.verificar()
         cliente.set_model_version_tag(nombre, r.version, "motivo", f"{r.motivo} (validada; no promovida)")
+        if motivo_mejora:
+            return ResultadoPromocion(True, False, r.version, f"{motivo_mejora}; no se reemplaza el vigente "
+                                      f"(versión {vigente.version})")
         return ResultadoPromocion(True, False, r.version, f"{r.motivo}; no se promueve (--promover {promover}"
                                   + (f", vigente {vigente.version})" if vigente else ")"))
 
@@ -220,7 +246,7 @@ def autorizar_y_promover(c: ConcesionEntrenamiento, cliente, r: ResultadoRegistr
             logger.error("promoción tardía: el alias se escribió pero la concesión se perdió antes de confirmar")
             raise
         logger.info("versión %s promovida y confirmada (decisión %s, secuencia %s)", r.version, decision_id, secuencia)
-        return ResultadoPromocion(True, True, r.version, r.motivo, decision_id, secuencia)
+        return ResultadoPromocion(True, True, r.version, motivo_mejora or r.motivo, decision_id, secuencia)
     if resultado == "no_aplicada":
         _anular(c, cliente, decision_id, nombre, r.version, "promoción anulada: el alias no se aplicó")
         raise ErrorPromocion(f"el alias '{alias}' no se aplicó a la versión {r.version}; la decisión se anuló")

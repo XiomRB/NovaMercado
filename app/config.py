@@ -78,9 +78,12 @@ def ruta_modelo() -> Path:
 def componentes_requeridos() -> tuple[str, ...]:
     valor = os.environ.get("COMPONENTES_REQUERIDOS", "").strip()
     if not valor:
+        base = COMPONENTES_REQUERIDOS_POR_DEFECTO
         if os.environ.get("MODELO_ORIGEN", "mlflow").strip().lower() in ("", "mlflow"):
-            return (*COMPONENTES_REQUERIDOS_POR_DEFECTO, "mlflow")
-        return COMPONENTES_REQUERIDOS_POR_DEFECTO
+            base = (*base, "mlflow")
+        if orquestador_configurado() == "airflow":           # etapa 7
+            base = (*base, "airflow")
+        return base
     nombres = tuple(dict.fromkeys(n.strip() for n in valor.split(",") if n.strip()))
     desconocidos = set(nombres) - set(COMPONENTES)
     if desconocidos:
@@ -125,3 +128,37 @@ def configurar_cliente_mlflow() -> None:
     reintentos salvo que el entorno indique otra cosa."""
     os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "5")
     os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "0")
+
+
+# ------------------------------------------------------------ reentrenamiento (etapa 7)
+def parametros_rol(usuario: str, variable_clave: str) -> dict:
+    """Parámetros psycopg2 para un rol de la etapa 7 (``nm_cierre``): host, puerto y base
+    de la URL del producto, con el usuario indicado y la clave de ``variable_clave``."""
+    from sqlalchemy.engine import make_url
+    clave = os.environ.get(variable_clave, "")
+    if not clave:
+        raise ConfiguracionInvalida(f"falta la variable de entorno {variable_clave}")
+    u = make_url(url_base_datos())
+    return {"host": u.host, "port": u.port or 5432, "dbname": u.database, "user": usuario, "password": clave}
+
+
+ORQUESTADORES = ("ninguno", "airflow")
+
+
+def orquestador_configurado() -> str:
+    """``ORQUESTADOR=airflow`` (producto, etapa 7) o ``ninguno`` (por defecto: la API
+    responde 503 a ``POST /admin/reentrenar``)."""
+    valor = os.environ.get("ORQUESTADOR", "ninguno").strip().lower() or "ninguno"
+    if valor not in ORQUESTADORES:
+        raise ConfiguracionInvalida(f"ORQUESTADOR debe ser uno de {ORQUESTADORES}")
+    return valor
+
+
+def config_airflow():
+    """URL de la API REST del webserver y el usuario de servicio de la API."""
+    from app.orquestador_airflow import ConfigAirflow
+    faltan = [v for v in ("AIRFLOW_URL", "AIRFLOW_API_USUARIO", "AIRFLOW_API_CLAVE") if not os.environ.get(v)]
+    if faltan:
+        raise ConfiguracionInvalida(f"con ORQUESTADOR=airflow faltan las variables {faltan}")
+    return ConfigAirflow(os.environ["AIRFLOW_URL"].strip().rstrip("/"), os.environ["AIRFLOW_API_USUARIO"],
+                         os.environ["AIRFLOW_API_CLAVE"])

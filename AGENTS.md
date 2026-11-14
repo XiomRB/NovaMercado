@@ -65,8 +65,8 @@ esas constraints.
 | 3 Persistencia PostgreSQL + CI | hecho (PR #3) |
 | 4 API FastAPI | hecho (PR #4) |
 | 5 MLflow (registro, alias, recarga, health) | hecho (PR #5) |
-| 6 Docker Compose + bootstrap | en revisión (`feat/etapa-6`) |
-| 7 Airflow DAG + orquestador real de /admin (los endpoints ya existen) | pendiente |
+| 6 Docker Compose + bootstrap | hecho (PR #6) |
+| 7 Airflow DAG + orquestador real de /admin | en revisión (`feat/etapa-7`) |
 | 8 Simulador de operación | pendiente |
 | 9 Documentación final y tag `entrega-lab2` | pendiente |
 
@@ -84,7 +84,13 @@ app/modelo/    proveedores.py, proveedor_mlflow.py, cache.py, artefacto.py, gest
                trabajo_entrenamiento.py, arranque.py, procedencia.py, dependencias.py,
                codigos_salida.py, entrenar_mlflow.py, reproducir.py, git_estado.py
 app/servicios/ persistencia.py, prediccion.py, observaciones.py, rechazos.py
-app/main.py    FastAPI; app/salud.py monitor; app/orquestador.py; app/dependencias.py
+app/main.py    FastAPI; app/salud.py monitor; app/orquestador.py; app/orquestador_airflow.py;
+               app/dependencias.py
+app/db/        (etapa 7) roles.py (nm_cierre, nm_vigilante, nm_senal), cierre.py (escritura del
+               resultado, marcar_inicio y vigilante; solo stdlib + psycopg2)
+app/modelo/    (etapa 7) r2.py, reentrenar.py (CLI del DAG), reconciliacion.py
+dags/          DAG de Airflow; nm_cierre.py = copia idéntica de app/db/cierre.py
+docker/        ejecutar (lanzador, env -i) y arranque_verificado.py (python -I -S -B)
 migraciones/   Alembic
 ml/           datos.py (carga raw/), calendario.py (feriados), features.py (variables
               sin fuga), modelos.py (baseline + HGB), costos.py (costo, τ, cantidad
@@ -204,3 +210,25 @@ tests/fixtures/ catálogo y ejemplos sintéticos: las pruebas nunca leen raw/
 * Toda escritura en MLflow del supervisor va precedida de `concesion.verificar()`.
 * No usar `.dockerignore` para excluir archivos versionados (rompería la
   procedencia): solo rutas que Git ya ignora.
+
+## Reglas de la etapa 7 (Airflow, reentrenamiento)
+
+* `dags/nm_cierre.py` es **copia byte a byte** de `app/db/cierre.py` (prueba): editar
+  siempre `app/db/cierre.py` y copiarlo. Ningún DAG importa `app/` ni `ml/`; el código
+  del proyecto solo corre en el entorno virtual de la imagen de Airflow, a través de
+  `docker/ejecutar` y el arranque verificado (no agregar otra forma de ejecutarlo).
+* `cierre.py` solo usa biblioteca estándar y psycopg2 (prueba AST).
+* Toda decisión sobre una solicitud de reentrenamiento empieza con `SELECT … FOR UPDATE`
+  de su fila y usa `clock_timestamp()`. Las condiciones de la recuperación van dentro
+  de la sentencia condicional (`cierre.CONDICIONES`), nunca evaluadas antes.
+* El resultado lo escribe solo el rol `nm_cierre` con `cierre.cerrar` (una sentencia
+  condicional, nunca reintentada); el veredicto, solo `nm_vigilante` bajo el bloqueo.
+  Nunca un `exitoso` después de un veredicto.
+* La concesión sigue adquiriéndose solo en `ejecutar_entrenamiento` (modos
+  `reentrenamiento` y `reconciliacion` incluidos). R2 no entra en `REQUERIDOS`: solo lo
+  exige `si_mejora`.
+* Los plazos (34/38/40 s del vigilante, G1/G2) están probados de forma estática con
+  las constantes de `cierre.py`, `reentrenar.py`, el DAG y Compose: cambiar uno exige
+  revisar `DECISIONES.md` §16.
+* Las pruebas de `tests/orquestacion` corren con Airflow (job de CI propio, entorno sin el
+  proyecto); en el entorno normal se omiten.

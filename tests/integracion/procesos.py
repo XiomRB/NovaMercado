@@ -50,6 +50,23 @@ def main(argv: list[str]) -> int:
             return 4
         print("RESULTADO " + r.como_json(), flush=True)
         return r.codigo
+    if accion == "reentrenar":
+        # CLI real de la etapa 7 en un árbol de trabajo sin commit: se sustituye solo la
+        # procedencia (probada aparte) y se pasa la configuración rápida de las pruebas.
+        from dataclasses import asdict
+
+        import app.modelo.ciclo_entrenamiento as ciclo
+        import app.modelo.procedencia as pr
+        from app.modelo import reentrenar
+        from tests.integracion.apoyo_mlflow import CONFIG, EVALUACION
+        pr.verificar_procedencia = lambda: pr.Procedencia("c" * 40, "git", pr.RAIZ)
+        original = ciclo.ejecutar_entrenamiento
+        config = args.get("config") or asdict(CONFIG)
+
+        def con_config(**kw):
+            return original(**kw, config=config, evaluacion=EVALUACION.como_dict())
+        ciclo.ejecutar_entrenamiento = con_config
+        return reentrenar.main(["--ejecucion", args["id"]])
     raise ValueError(accion)
 
 

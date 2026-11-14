@@ -88,7 +88,15 @@ def generar(carpeta_git: Path) -> dict:
                                                                   if len(cambios) > MAX_CAMBIOS else []),
             "clase_a": _leer_ls_files((carpeta_git / "clase_a").read_text()),
             "clase_b": _leer_ls_files((carpeta_git / "clase_b").read_text()),
-            "imagen_base": (carpeta_git / "imagen_base").read_text().strip() or None}
+            "imagen_base": (carpeta_git / "imagen_base").read_text().strip() or None,
+            **_directorios(carpeta_git)}
+
+
+def _directorios(carpeta_git: Path) -> dict:
+    """Etapa 7: directorios de clase A de la imagen (``directorios_a``), si el script los
+    registró; sin ese archivo, los de la etapa 6."""
+    f = carpeta_git / "directorios_a"
+    return {"directorios_a": f.read_text().split()} if f.is_file() else {}
 
 
 # --------------------------------------------------------------- verificación
@@ -136,7 +144,7 @@ def verificar_imagen(raiz: Path = RAIZ, archivo: Path | None = None, *, dependen
             problemas.append(f"falta {ruta}")
         elif blob_git(f.read_bytes()) != blob:
             problemas.append(f"{ruta} no coincide con el commit {commit[:12]}")
-    for d in DIRECTORIOS_A:
+    for d in datos.get("directorios_a") or DIRECTORIOS_A:       # etapa 7: por imagen
         base = raiz / d
         if not base.is_dir():
             continue

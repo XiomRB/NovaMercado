@@ -52,6 +52,10 @@ REINTENTO_S = 2                     # espera entre intentos de adquisición
 _EN_POSESION = threading.Lock()     # sin reentrada dentro del mismo proceso
 
 
+class ReclamacionRechazada(RuntimeError):
+    """La solicitud de reentrenamiento ya tiene resultado, veredicto o reclamación."""
+
+
 class BloqueoOcupado(RuntimeError):
     """Otro entrenamiento tiene el lock o una concesión vigente (código de salida 5)."""
 
@@ -306,6 +310,38 @@ class ConcesionEntrenamiento:
             cur.execute("SELECT resultado FROM resoluciones_promocion WHERE decision_id = %s", (decision_id,))
             fila = cur.fetchone()
         return fila[0] if fila else None
+
+    def origen_de_decision(self, decision_id: int) -> str | None:
+        """Origen de una decisión (``arranque_respaldo`` identifica al respaldo baseline;
+        etapa 7, E7-6b). Se lee de PostgreSQL, no de los tags de MLflow."""
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT origen FROM decisiones_promocion WHERE decision_id = %s", (decision_id,))
+            fila = cur.fetchone()
+        return fila[0] if fila else None
+
+    # ------------------------------------------------- reclamación (etapa 7, §16)
+    def reclamar(self, id_reentrenamiento: str) -> None:
+        """Reclamación atómica de una solicitud de reentrenamiento, en una transacción
+        condicionada a la concesión: bloquea la solicitud (``FOR UPDATE``) y exige que
+        no tenga resultado, veredicto ni reclamación previa; entonces inserta la
+        reclamación con la época propia. Si no, :class:`ReclamacionRechazada` (código 7):
+        un segundo intento de la tarea nunca entrena."""
+        def fn(cur, _ultima):
+            cur.execute("SELECT id FROM solicitudes_reentrenamiento WHERE id = %s FOR UPDATE", (id_reentrenamiento,))
+            if cur.fetchone() is None:
+                raise ReclamacionRechazada(f"no existe la solicitud {id_reentrenamiento}")
+            cur.execute("SELECT EXISTS (SELECT 1 FROM resultados_reentrenamiento WHERE id = %(i)s), "
+                        "EXISTS (SELECT 1 FROM veredictos_reentrenamiento WHERE id = %(i)s), "
+                        "EXISTS (SELECT 1 FROM reclamaciones_reentrenamiento WHERE id = %(i)s), "
+                        "EXISTS (SELECT 1 FROM tareas_reentrenamiento WHERE id = %(i)s)", {"i": id_reentrenamiento})
+            resultado, veredicto, reclamada, iniciada = cur.fetchone()
+            if resultado or veredicto or reclamada or not iniciada:
+                motivo = ("ya tiene resultado" if resultado else "tiene un veredicto de ausencia" if veredicto
+                          else "ya fue reclamada" if reclamada else "no tiene inicio registrado")
+                raise ReclamacionRechazada(f"la solicitud {id_reentrenamiento} {motivo}")
+            cur.execute("INSERT INTO reclamaciones_reentrenamiento (id, epoca) VALUES (%s, %s)",
+                        (id_reentrenamiento, self.epoca))
+        self.condicionada(fn)
 
 
 # ------------------------------------------------------- vigilante del proceso hijo
