@@ -145,7 +145,7 @@ jobs:
       - name: Airflow 2.10.5 con sus constraints oficiales (entorno propio, sin el proyecto)
         run: |
           python -m venv /tmp/airflow-venv
-          /tmp/airflow-venv/bin/pip install "apache-airflow==2.10.5" "apache-airflow-providers-postgres" "pytest==8.3.5" \
+          /tmp/airflow-venv/bin/pip install "apache-airflow==2.10.5" "apache-airflow-providers-postgres" pytest \
             --constraint https://raw.githubusercontent.com/apache/airflow/constraints-2.10.5/constraints-3.11.txt
       - name: pytest tests/orquestacion (DagBag, estructura y tareas SQL contra PostgreSQL)
         env:
