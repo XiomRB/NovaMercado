@@ -488,8 +488,11 @@ def reentrenamiento_fallido() -> str:
 def airflow_detenido(id_previo: str) -> None:
     print("== Airflow detenido", flush=True)
     dc("stop", "airflow-webserver")
-    s, r = http("POST", "/admin/reentrenar")
-    comprobar(s == 503 and "detail" in r, f"POST /admin/reentrenar → 503 ({r.get('detail', '')[:70]})")
+    t = time.monotonic()
+    s, r = http("POST", "/admin/reentrenar", timeout=20)
+    dur = time.monotonic() - t
+    comprobar(s == 503 and "detail" in (r or {}) and dur <= 10,
+              f"POST /admin/reentrenar → 503 en {dur:.1f} s ({(r or {}).get('detail', '')[:70]})")
     comprobar(http("GET", f"/admin/reentrenar/{id_previo}")[0] == 200, "GET de una ejecución anterior → 200")
     seg = esperar(lambda: salud()[1] and salud()[1]["estado"] == "degradado", 60, 1)
     comprobar(seg is not None and "Airflow" in salud()[1].get("motivo", ""),

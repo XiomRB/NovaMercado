@@ -206,3 +206,15 @@ def test_id_con_caracteres_especiales_se_codifica(airflow):
     airflow.get = [(200, {"dag_run_id": "a:b+c", "dag_id": DAG_ID}, 0)]
     ClienteAirflow(ConfigAirflow(airflow.url, "u", "c")).leer_ejecucion("a:b+c")
     assert airflow.recibidas[-1][1] == f"/api/v1/dags/{DAG_ID}/dagRuns/a%3Ab%2Bc"
+
+
+def test_airflow_que_no_responde_acota_el_inicio(airflow):
+    """POST y GET sin respuesta (Airflow colgado): el inicio no confirma y termina dentro
+    del presupuesto (8 s), así la API responde 503 a tiempo."""
+    airflow.post = (200, None, 30)
+    airflow.get = [(200, {"dag_run_id": "nm-x", "dag_id": DAG_ID}, 30)]
+    cfg = ConfigAirflow(airflow.url, "api", "c", timeout=5.0)
+    o = OrquestadorAirflow(None, cfg, nombre_modelo="m", parametros_cierre=dict, espera_confirmacion=1.5)
+    t = time.monotonic()
+    assert o._enviar("nm-x") is False
+    assert time.monotonic() - t <= o.presupuesto_inicio + 1.0

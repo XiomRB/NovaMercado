@@ -1078,7 +1078,9 @@ concesión, el supervisor y el hijo de la etapa 6: el DAG es un origen más
   202 aunque ya terminó; otra huella → 422). El id `nm-<uuid4>` se registra **antes**
   de llamar a Airflow (si no se puede: 503 y no se llama). 200 cuenta solo con ese
   `dag_run_id` y `dag_id`; 409 o una respuesta perdida se confirman con `GET dagRuns`;
-  404 o sin confirmación → 503 y la solicitud queda pendiente.
+  404 o sin confirmación → 503 y la solicitud queda pendiente. El POST y las
+  confirmaciones comparten un presupuesto de 8 s (hallazgo del extremo a extremo: con
+  Airflow detenido el 503 tardaba ≈ 23 s).
 * `GET /admin/reentrenar/{id}` lee solo PostgreSQL, después de ejecutar la
   recuperación de ese id. Sin vigente al terminar, `version` es `""` (el contrato la
   exige como texto).

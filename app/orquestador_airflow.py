@@ -50,6 +50,7 @@ DAG_ID = "novamercado_reentrenamiento"
 CLAVE_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 INTERVALO_RECUPERACION_S = 15.0
 TIMEOUT_HTTP_S = 5.0
+PRESUPUESTO_INICIO_S = 8.0          # POST + confirmaciones: el 503 llega en ≤ 8 s con Airflow caído
 CONFIRMACIONES = 3
 ESPERA_CONFIRMACION_S = 1.5
 VERSION_SIN_VIGENTE = ""
@@ -94,22 +95,24 @@ class ClienteAirflow:
         self._cabeceras = {"Authorization": f"Basic {token}", "Content-Type": "application/json",
                            "Accept": "application/json"}
 
-    def _pedir(self, metodo: str, ruta: str, cuerpo: dict | None = None) -> tuple[int, dict]:
+    def _pedir(self, metodo: str, ruta: str, cuerpo: dict | None = None,
+               timeout: float | None = None) -> tuple[int, dict]:
         datos = None if cuerpo is None else json.dumps(cuerpo).encode()
         req = urllib.request.Request(self.cfg.url.rstrip("/") + ruta, data=datos, method=metodo,
                                      headers=self._cabeceras)
         try:
-            with urllib.request.urlopen(req, timeout=self.cfg.timeout) as r:
+            with urllib.request.urlopen(req, timeout=timeout or self.cfg.timeout) as r:
                 return r.status, _json(r.read())
         except urllib.error.HTTPError as exc:
             return exc.code, _json(exc.read())
 
-    def crear_ejecucion(self, id_: str) -> tuple[int, dict]:
-        return self._pedir("POST", f"/api/v1/dags/{self.cfg.dag_id}/dagRuns", {"dag_run_id": id_, "conf": {}})
+    def crear_ejecucion(self, id_: str, timeout: float | None = None) -> tuple[int, dict]:
+        return self._pedir("POST", f"/api/v1/dags/{self.cfg.dag_id}/dagRuns", {"dag_run_id": id_, "conf": {}},
+                           timeout)
 
-    def leer_ejecucion(self, id_: str) -> tuple[int, dict]:
+    def leer_ejecucion(self, id_: str, timeout: float | None = None) -> tuple[int, dict]:
         from urllib.parse import quote
-        return self._pedir("GET", f"/api/v1/dags/{self.cfg.dag_id}/dagRuns/{quote(id_, safe='')}")
+        return self._pedir("GET", f"/api/v1/dags/{self.cfg.dag_id}/dagRuns/{quote(id_, safe='')}", None, timeout)
 
     def salud(self) -> bool:
         try:
@@ -132,7 +135,8 @@ def _json(crudo: bytes) -> dict:
 class OrquestadorAirflow:
     def __init__(self, motor, cfg: ConfigAirflow, *, nombre_modelo: str, parametros_cierre,
                  cliente: ClienteAirflow | None = None, intervalo: float = INTERVALO_RECUPERACION_S,
-                 espera_confirmacion: float = ESPERA_CONFIRMACION_S):
+                 espera_confirmacion: float = ESPERA_CONFIRMACION_S,
+                 presupuesto_inicio: float = PRESUPUESTO_INICIO_S):
         self.motor = motor
         self.cfg = cfg
         self.cliente = cliente or ClienteAirflow(cfg)
@@ -140,6 +144,7 @@ class OrquestadorAirflow:
         self.parametros_cierre = parametros_cierre        # callable → dict (claves fuera del código)
         self.intervalo = intervalo
         self.espera_confirmacion = espera_confirmacion
+        self.presupuesto_inicio = presupuesto_inicio
         self._parar = threading.Event()
         self._hilo: threading.Thread | None = None
 
@@ -189,27 +194,37 @@ class OrquestadorAirflow:
     def _coincide(self, cuerpo: dict, id_: str) -> bool:
         return cuerpo.get("dag_run_id") == id_ and cuerpo.get("dag_id") == self.cfg.dag_id
 
+    def _restante(self, fin: float) -> float:
+        import time
+        return min(self.cfg.timeout, fin - time.monotonic())
+
     def _enviar(self, id_: str) -> bool:
+        """POST y, si hace falta, confirmación; todo dentro de ``presupuesto_inicio``."""
+        import time
+        fin = time.monotonic() + self.presupuesto_inicio
         try:
-            codigo, cuerpo = self.cliente.crear_ejecucion(id_)
+            codigo, cuerpo = self.cliente.crear_ejecucion(id_, timeout=max(self._restante(fin) * 0.5, 0.1))
         except Exception as exc:  # noqa: BLE001 - respuesta perdida: se confirma
             logger.warning("POST dagRuns sin respuesta (%s): se confirma con GET", type(exc).__name__)
-            return self._confirmar(id_)
+            return self._confirmar(id_, fin)
         if codigo == 200:
             if self._coincide(cuerpo, id_):
                 return True
             logger.error("Airflow respondió 200 con otra ejecución: se confirma con GET")
-            return self._confirmar(id_)
+            return self._confirmar(id_, fin)
         if codigo == 409:
-            return self._confirmar(id_)
+            return self._confirmar(id_, fin)
         logger.error("Airflow rechazó la ejecución %s con %s", id_, codigo)
         return False
 
-    def _confirmar(self, id_: str) -> bool:
+    def _confirmar(self, id_: str, fin: float | None = None) -> bool:
         import time
+        fin = fin if fin is not None else time.monotonic() + self.presupuesto_inicio
         for i in range(CONFIRMACIONES):
+            if self._restante(fin) < 0.1:
+                break
             try:
-                codigo, cuerpo = self.cliente.leer_ejecucion(id_)
+                codigo, cuerpo = self.cliente.leer_ejecucion(id_, timeout=self._restante(fin))
                 if codigo == 200:
                     return self._coincide(cuerpo, id_)
                 if codigo == 404:
@@ -217,7 +232,7 @@ class OrquestadorAirflow:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("no se pudo confirmar la ejecución %s: %s", id_, type(exc).__name__)
             if i + 1 < CONFIRMACIONES:
-                time.sleep(self.espera_confirmacion)
+                time.sleep(max(min(self.espera_confirmacion, fin - time.monotonic()), 0))
         return False
 
     # ------------------------------------------------------------------- estado
