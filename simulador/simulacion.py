@@ -402,7 +402,8 @@ class Simulacion:
             ev = imagenes.preparar(self.entorno, self.estado, self.estado["commit"], git("rev-parse", "HEAD"),
                                    arbol_limpio())
         except imagenes.ImagenNoValida as exc:
-            self.fallo(11, str(exc), dia)
+            # se niega antes de levantar nada; no es un resultado de la simulación (exit 3)
+            self.estado.evento("imagen_rechazada", detalle=str(exc), dia=dia)
             raise
         for x in ev:
             if x["accion"] != "reutilizada":

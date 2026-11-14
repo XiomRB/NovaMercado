@@ -76,6 +76,9 @@ def preparar(esc: Escenario, fuente: Path, carpeta: Path, commit: str) -> dict:
     datos, trabajo, evid = carpeta / "datos", carpeta / "trabajo", carpeta / "evidencia"
     for d in (datos, trabajo, evid):
         d.mkdir(mode=0o700, parents=True, exist_ok=False)
+    # el contenedor (otro usuario) lee datos/ por el bind mount; la carpeta de la ejecución
+    # sigue en 0700, así que ningún otro usuario del equipo puede llegar a ella
+    datos.chmod(0o755)
 
     tiendas, familias = leer_catalogo(fuente)
     ids_familia = [f for f, _ in familias]

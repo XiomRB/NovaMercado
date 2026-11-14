@@ -10,6 +10,7 @@ pythonpath = ["."]
 addopts = "-ra"
 markers = [
     "integracion: requiere PostgreSQL (variable TEST_DATABASE_URL); ver README.md",
+    "compose: requiere el binario de Docker Compose (docker compose config); ver README.md",
 ]
 
 [tool.ruff]
