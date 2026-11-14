@@ -129,6 +129,22 @@ def ejecuciones_mlflow() -> int:
     return len(r.get("runs", []))
 
 
+def codigo_de_salida(servicio: str, limite: float) -> int | None:
+    """Código de salida del contenedor de un servicio de una sola ejecución, cuando termina
+    (``docker inspect``; ``docker compose wait`` puede devolver otro código si el
+    contenedor ya había terminado)."""
+    fin = time.monotonic() + limite
+    while time.monotonic() < fin:
+        cid = dc("ps", "-a", "-q", servicio, check=False).stdout.strip().splitlines()
+        if cid:
+            r = run("docker", "inspect", "-f", "{{.State.Status}} {{.State.ExitCode}}", cid[0], check=False)
+            estado, _, codigo = r.stdout.strip().partition(" ")
+            if estado == "exited":
+                return int(codigo)
+        time.sleep(2)
+    return None
+
+
 def log(servicio: str) -> str:
     return dc("logs", "--no-color", servicio, check=False).stdout
 
@@ -275,8 +291,8 @@ def reinicio(como: str, antes: dict) -> None:
     comprobar(seg is not None, f"vuelve a /health ok en {seg or 0:.0f} s")
     comprobar("ya_cargado" in log("preparar"), "preparar: la carga responde ya_cargado")
     t = time.monotonic()
-    r = dc("wait", "entrenamiento-inicial", check=False, timeout=900)      # termina después de que la API
-    comprobar(r.returncode == 0, "entrenamiento-inicial terminó con código 0 "
+    codigo = codigo_de_salida("entrenamiento-inicial", 900)                # termina después de que la API
+    comprobar(codigo == 0, f"entrenamiento-inicial terminó con código {codigo} "
               f"en {time.monotonic() - t:.0f} s")                          # ya responde con el modelo
     ultima = [ln for ln in log("entrenamiento-inicial").splitlines() if '"codigo"' in ln][-1]
     comprobar("ya existe un vigente confirmado" in ultima, "entrenamiento-inicial: no entrena de nuevo")
