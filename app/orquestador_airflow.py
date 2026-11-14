@@ -207,12 +207,35 @@ class OrquestadorAirflow:
         import time
         return min(self.cfg.timeout, fin - time.monotonic())
 
+    def _llamar(self, fn, id_: str, fin: float, fraccion: float = 1.0):
+        """Llamada a Airflow con límite DURO: el ``timeout`` de urllib no cubre la
+        resolución DNS (``getaddrinfo``), que con el contenedor de Airflow detenido puede
+        tardar; se espera a lo sumo lo que queda del presupuesto. Si no termina, es una
+        respuesta perdida (``TimeoutError``): la solicitud queda pendiente y se confirma
+        después (o lo reenvía un reintento con la misma Idempotency-Key)."""
+        limite = max(self._restante(fin) * fraccion, 0.05)
+        caja: dict = {}
+
+        def trabajo():
+            try:
+                caja["r"] = fn(id_, timeout=limite)
+            except BaseException as exc:  # noqa: BLE001 - se relanza en el hilo que llama
+                caja["e"] = exc
+        h = threading.Thread(target=trabajo, name="airflow-http", daemon=True)
+        h.start()
+        h.join(limite)
+        if h.is_alive():
+            raise TimeoutError(f"Airflow no respondió en {limite:.1f} s")
+        if "e" in caja:
+            raise caja["e"]
+        return caja["r"]
+
     def _enviar(self, id_: str) -> bool:
         """POST y, si hace falta, confirmación; todo dentro de ``presupuesto_inicio``."""
         import time
         fin = time.monotonic() + self.presupuesto_inicio
         try:
-            codigo, cuerpo = self.cliente.crear_ejecucion(id_, timeout=max(self._restante(fin) * 0.5, 0.1))
+            codigo, cuerpo = self._llamar(self.cliente.crear_ejecucion, id_, fin, fraccion=0.5)
         except Exception as exc:  # noqa: BLE001 - respuesta perdida: se confirma
             logger.warning("POST dagRuns sin respuesta (%s): se confirma con GET", type(exc).__name__)
             return self._confirmar(id_, fin)
@@ -233,7 +256,7 @@ class OrquestadorAirflow:
             if self._restante(fin) < 0.1:
                 break
             try:
-                codigo, cuerpo = self.cliente.leer_ejecucion(id_, timeout=self._restante(fin))
+                codigo, cuerpo = self._llamar(self.cliente.leer_ejecucion, id_, fin)
                 if codigo == 200:
                     return self._coincide(cuerpo, id_)
                 if codigo == 404:

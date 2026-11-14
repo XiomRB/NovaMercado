@@ -218,3 +218,30 @@ def test_airflow_que_no_responde_acota_el_inicio(airflow):
     t = time.monotonic()
     assert o._enviar("nm-x") is False
     assert time.monotonic() - t <= o.presupuesto_inicio + 1.0
+
+
+class ClienteQueIgnoraElTimeout:
+    """Simula una resolución DNS o una llamada que no respeta el timeout de urllib."""
+
+    def __init__(self):
+        self.llamadas = 0
+
+    def crear_ejecucion(self, id_, timeout=None):
+        self.llamadas += 1
+        time.sleep(30)
+
+    def leer_ejecucion(self, id_, timeout=None):
+        self.llamadas += 1
+        time.sleep(30)
+
+
+def test_cota_dura_aunque_la_llamada_ignore_su_timeout():
+    cfg = ConfigAirflow("http://no-se-usa", "api", "c", timeout=5.0)
+    cliente = ClienteQueIgnoraElTimeout()
+    o = OrquestadorAirflow(None, cfg, nombre_modelo="m", parametros_cierre=dict, cliente=cliente,
+                           espera_confirmacion=1.5)
+    t = time.monotonic()
+    assert o._enviar("nm-x") is False
+    dur = time.monotonic() - t
+    assert dur <= o.presupuesto_inicio + 0.2, dur
+    assert cliente.llamadas >= 2                       # POST y al menos una confirmación dentro de la cota

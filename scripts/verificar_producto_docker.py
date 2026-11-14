@@ -569,7 +569,12 @@ def airflow_detenido(id_previo: str) -> None:
                                      "fuera_de_la_cota_s": round(dur - af, 2)})
     print(f"     POST total {dur:.2f} s = registro en PostgreSQL {reg:.2f} s + envío y confirmaciones {af:.2f} s "
           f"+ resto (HTTP, hilo de la API) {dur - reg - af:.2f} s")
-    comprobar(af <= 8.0 + 0.3, f"envío y confirmaciones a Airflow: {af:.2f} s (cota 8 s)")
+    comprobar(af <= 8.0 + 0.1, f"envío y confirmaciones a Airflow: {af:.2f} s (cota 8 s)")
+    r = dc("exec", "-T", "api", "python", "-c",
+           "import socket, time; t = time.monotonic()\ntry:\n socket.getaddrinfo('airflow-webserver', 8080)\n"
+           "except OSError as e:\n print(type(e).__name__)\nprint(f'{time.monotonic() - t:.2f}')", check=False)
+    print(f"     resolución DNS de airflow-webserver detenido desde la API: {r.stdout.split()} s")
+    MEDICIONES["airflow_caido"]["dns_s"] = r.stdout.split()[-1] if r.stdout.split() else None
     comprobar(http("GET", f"/admin/reentrenar/{id_previo}")[0] == 200, "GET de una ejecución anterior → 200")
     seg = esperar(lambda: salud()[1] and salud()[1]["estado"] == "degradado", 60, 1)
     comprobar(seg is not None and "Airflow" in salud()[1].get("motivo", ""),

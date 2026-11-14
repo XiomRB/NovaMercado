@@ -1080,7 +1080,10 @@ concesión, el supervisor y el hijo de la etapa 6: el DAG es un origen más
   `dag_run_id` y `dag_id`; 409 o una respuesta perdida se confirman con `GET dagRuns`;
   404 o sin confirmación → 503 y la solicitud queda pendiente. El POST y las
   confirmaciones comparten un presupuesto de 8 s (hallazgo del extremo a extremo: con
-  Airflow detenido el 503 tardaba ≈ 23 s).
+  Airflow detenido el 503 tardaba ≈ 23 s). Cada llamada tiene un límite **duro** (hilo con
+  espera acotada): el `timeout` de urllib no cubre la resolución DNS, y con el contenedor
+  detenido el presupuesto se excedía (8,71 s medidos). Una llamada que no termina a tiempo
+  es una respuesta perdida: la solicitud queda pendiente.
 * `GET /admin/reentrenar/{id}` lee solo PostgreSQL, después de ejecutar la
   recuperación de ese id. Sin vigente al terminar, `version` es `""` (el contrato la
   exige como texto).
