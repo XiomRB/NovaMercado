@@ -1,0 +1,591 @@
+{
+ "resultado": "APROBADA",
+ "escenario": {
+  "nombre": "completo",
+  "fuente": "raw",
+  "corte": "2025-11-30",
+  "dias": 90,
+  "reentrenos": [
+   8,
+   15,
+   22,
+   29,
+   36,
+   43,
+   50,
+   57,
+   64,
+   71,
+   78,
+   85
+  ],
+  "dia_repetir_clave": 8,
+  "dia_mlflow": 47,
+  "dia_stop_start": 30,
+  "dia_down_up": 60,
+  "semilla": 20251201,
+  "tasa_defecto_prediccion": 0.25,
+  "tasa_defecto_observacion": 0.2,
+  "tasa_repeticion": 0.05,
+  "cambio_demanda": null,
+  "criterio_costo": true,
+  "plazos": {
+   "arranque": 600,
+   "reentrenamiento": 600,
+   "promocion": 120,
+   "degradado": 60,
+   "recuperado": 120
+  }
+ },
+ "commit": "1ff3243a77d8dde728a6e9479d3ce9edb9ee6965",
+ "fallos_por_criterio": {},
+ "costos": {
+  "costo_servicio": 302227.90000000014,
+  "costo_referencia": 603387.8,
+  "filas": 10800,
+  "reduccion": 0.4991149970218156
+ },
+ "costos_desglose": {
+  "familia": {
+   "abarrotes": {
+    "servicio": 38600.00000000008,
+    "referencia": 87562.99999999997,
+    "filas": 900
+   },
+   "bebe": {
+    "servicio": 3463.2000000000007,
+    "referencia": 8819.799999999994,
+    "filas": 900
+   },
+   "bebidas": {
+    "servicio": 30023.99999999998,
+    "referencia": 80388.40000000002,
+    "filas": 900
+   },
+   "carnes": {
+    "servicio": 46876.0,
+    "referencia": 79568.0,
+    "filas": 900
+   },
+   "cuidado_personal": {
+    "servicio": 5876.399999999997,
+    "referencia": 18754.699999999997,
+    "filas": 900
+   },
+   "frutas_verduras": {
+    "servicio": 48095.0,
+    "referencia": 77910.0,
+    "filas": 900
+   },
+   "lacteos": {
+    "servicio": 45317.00000000001,
+    "referencia": 65079.599999999984,
+    "filas": 900
+   },
+   "licores": {
+    "servicio": 6055.699999999996,
+    "referencia": 33471.90000000002,
+    "filas": 900
+   },
+   "limpieza": {
+    "servicio": 7504.900000000002,
+    "referencia": 24342.50000000001,
+    "filas": 900
+   },
+   "mascotas": {
+    "servicio": 3029.600000000002,
+    "referencia": 5344.399999999996,
+    "filas": 900
+   },
+   "panaderia": {
+    "servicio": 48290.0,
+    "referencia": 85630.5,
+    "filas": 900
+   },
+   "snacks": {
+    "servicio": 19096.099999999977,
+    "referencia": 36514.99999999999,
+    "filas": 900
+   }
+  },
+  "tienda": {
+   "1": {
+    "servicio": 50179.600000000006,
+    "referencia": 97533.19999999994,
+    "filas": 1080
+   },
+   "10": {
+    "servicio": 10859.5,
+    "referencia": 20299.500000000007,
+    "filas": 1080
+   },
+   "2": {
+    "servicio": 28710.80000000001,
+    "referencia": 54476.900000000016,
+    "filas": 1080
+   },
+   "3": {
+    "servicio": 47596.50000000005,
+    "referencia": 95340.40000000001,
+    "filas": 1080
+   },
+   "4": {
+    "servicio": 10631.999999999995,
+    "referencia": 19879.000000000022,
+    "filas": 1080
+   },
+   "5": {
+    "servicio": 56746.39999999995,
+    "referencia": 120602.99999999996,
+    "filas": 1080
+   },
+   "6": {
+    "servicio": 29762.09999999999,
+    "referencia": 55685.699999999975,
+    "filas": 1080
+   },
+   "7": {
+    "servicio": 29492.399999999994,
+    "referencia": 61683.09999999996,
+    "filas": 1080
+   },
+   "8": {
+    "servicio": 28435.599999999973,
+    "referencia": 58051.50000000006,
+    "filas": 1080
+   },
+   "9": {
+    "servicio": 9812.999999999995,
+    "referencia": 19835.5,
+    "filas": 1080
+   }
+  },
+  "semana": {
+   "1": {
+    "servicio": 24890.099999999995,
+    "referencia": 43160.999999999985,
+    "filas": 840
+   },
+   "10": {
+    "servicio": 22380.700000000015,
+    "referencia": 35780.50000000001,
+    "filas": 840
+   },
+   "11": {
+    "servicio": 22344.599999999995,
+    "referencia": 34267.39999999999,
+    "filas": 840
+   },
+   "12": {
+    "servicio": 21302.900000000012,
+    "referencia": 35996.6,
+    "filas": 840
+   },
+   "13": {
+    "servicio": 19250.499999999996,
+    "referencia": 31298.70000000002,
+    "filas": 720
+   },
+   "2": {
+    "servicio": 24686.700000000023,
+    "referencia": 42182.29999999997,
+    "filas": 840
+   },
+   "3": {
+    "servicio": 25751.10000000002,
+    "referencia": 55877.500000000044,
+    "filas": 840
+   },
+   "4": {
+    "servicio": 31202.100000000028,
+    "referencia": 75007.09999999998,
+    "filas": 840
+   },
+   "5": {
+    "servicio": 25499.09999999998,
+    "referencia": 66259.09999999999,
+    "filas": 840
+   },
+   "6": {
+    "servicio": 20496.2,
+    "referencia": 51384.39999999997,
+    "filas": 840
+   },
+   "7": {
+    "servicio": 21127.100000000006,
+    "referencia": 50538.50000000001,
+    "filas": 840
+   },
+   "8": {
+    "servicio": 20709.900000000023,
+    "referencia": 42928.800000000025,
+    "filas": 840
+   },
+   "9": {
+    "servicio": 22586.900000000005,
+    "referencia": 38705.90000000001,
+    "filas": 840
+   }
+  },
+  "version": {
+   "1": {
+    "servicio": 152525.29999999955,
+    "referencia": 333871.40000000055,
+    "filas": 5040
+   },
+   "11": {
+    "servicio": 21302.900000000012,
+    "referencia": 35996.6,
+    "filas": 840
+   },
+   "12": {
+    "servicio": 19250.499999999996,
+    "referencia": 31298.70000000002,
+    "filas": 720
+   },
+   "6": {
+    "servicio": 41837.00000000002,
+    "referencia": 93467.29999999999,
+    "filas": 1680
+   },
+   "8": {
+    "servicio": 67312.19999999997,
+    "referencia": 108753.79999999996,
+    "filas": 2520
+   }
+  }
+ },
+ "mediciones": {
+  "arranque_s": [
+   391.9
+  ],
+  "reentrenamiento_s": [
+   278.4,
+   331.9,
+   295.9,
+   290.2,
+   324.6,
+   250.1,
+   44.4,
+   291.4,
+   253.3,
+   309.3,
+   315.3,
+   291.8,
+   275.2
+  ],
+  "reinicio_stop/start_s": [
+   84.7
+  ],
+  "promocion_s": [
+   9.9,
+   4.4,
+   16.4,
+   10.0
+  ],
+  "mlflow_degradado_s": [
+   4.0
+  ],
+  "mlflow_recuperado_s": [
+   23.2
+  ],
+  "reinicio_down/up_s": [
+   76.2
+  ]
+ },
+ "ejecuciones": [
+  {
+   "dia": 8,
+   "tipo": "programado",
+   "clave": "sim-d14fdcfe-r1",
+   "id": "nm-2182a293-602a-4141-83d1-9d85c8c8b66a",
+   "t_intencion": 1794687285.6164813,
+   "t_202": 1794687286.3828948,
+   "repeticion": {
+    "id": "nm-2182a293-602a-4141-83d1-9d85c8c8b66a"
+   },
+   "terminal": {
+    "estado": "exitoso",
+    "promovido": false,
+    "version": "1",
+    "motivo": "Costo en validación 49,590 del candidato vs 49,453 del vigente (14 días, 1674 filas); no se reemplaza el vigente (versión 1)"
+   },
+   "t_visto": 1794687566.8780217,
+   "duracion": 278.40515089035034
+  },
+  {
+   "dia": 15,
+   "tipo": "programado",
+   "clave": "sim-d14fdcfe-r2",
+   "id": "nm-493bf0fb-3c5a-43f1-b2d7-86ae309706e6",
+   "t_intencion": 1794687568.508142,
+   "t_202": 1794687569.3561246,
+   "terminal": {
+    "estado": "exitoso",
+    "promovido": false,
+    "version": "1",
+    "motivo": "Costo en validación 75,050 del candidato vs 74,839 del vigente (21 días, 2505 filas); no se reemplaza el vigente (versión 1)"
+   },
+   "t_visto": 1794687905.6837049,
+   "duracion": 331.91168212890625
+  },
+  {
+   "dia": 22,
+   "tipo": "programado",
+   "clave": "sim-d14fdcfe-r3",
+   "id": "nm-5f68c10e-40c5-4f89-b7d8-86c808efe0db",
+   "t_intencion": 1794687907.7889552,
+   "t_202": 1794687908.7026587,
+   "terminal": {
+    "estado": "exitoso",
+    "promovido": false,
+    "version": "1",
+    "motivo": "Costo en validación 106,557 del candidato vs 106,036 del vigente (28 días, 3343 filas); no se reemplaza el vigente (versión 1)"
+   },
+   "t_visto": 1794688204.8355348,
+   "duracion": 295.9076039791107
+  },
+  {
+   "dia": 29,
+   "tipo": "programado",
+   "clave": "sim-d14fdcfe-r4",
+   "id": "nm-96e53d35-5880-4db5-9d22-70a1ebfb0f0b",
+   "t_intencion": 1794688206.790913,
+   "t_202": 1794688207.7682962,
+   "terminal": {
+    "estado": "exitoso",
+    "promovido": false,
+    "version": "1",
+    "motivo": "Costo en validación 106,557 del candidato vs 106,036 del vigente (28 días, 3343 filas); no se reemplaza el vigente (versión 1)"
+   },
+   "t_visto": 1794688499.3734968,
+   "duracion": 290.19633388519287
+  },
+  {
+   "dia": 36,
+   "tipo": "programado",
+   "clave": "sim-d14fdcfe-r5",
+   "id": "nm-5108973f-1b97-4682-bbec-513d9006a534",
+   "t_intencion": 1794688707.9518957,
+   "t_202": 1794688708.4242432,
+   "terminal": {
+    "estado": "exitoso",
+    "promovido": true,
+    "version": "6",
+    "motivo": "Costo en validación 101,658 del candidato vs 102,407 del vigente (28 días, 3337 filas)"
+   },
+   "t_visto": 1794689036.6899064,
+   "duracion": 324.6069972515106,
+   "promocion_s": 9.9
+  },
+  {
+   "dia": 43,
+   "tipo": "programado",
+   "clave": "sim-d14fdcfe-r6",
+   "id": "nm-03be514a-94cf-4291-ab45-840d66f3f143",
+   "t_intencion": 1794689042.9714825,
+   "t_202": 1794689043.5614696,
+   "terminal": {
+    "estado": "exitoso",
+    "promovido": false,
+    "version": "6",
+    "motivo": "datos nuevos insuficientes para comparar con el vigente (3 < 7 días); no se reemplaza el vigente (versión 6)"
+   },
+   "t_visto": 1794689295.8195302,
+   "duracion": 250.08686089515686
+  },
+  {
+   "dia": 47,
+   "tipo": "caida",
+   "clave": null,
+   "id": "nm-895d4ccb-7c76-414e-9d78-ab42a46c625d",
+   "t_intencion": 1794689304.5314162,
+   "t_202": 1794689305.017963,
+   "terminal": {
+    "estado": "fallido",
+    "promovido": false,
+    "version": "6",
+    "motivo": "error: MlflowException: API request to http://mlflow:5000/api/2.0/mlflow/model-versions/search failed with exception HTTPConnectionPool(host='mlflow', port=5000): Max retries exceeded with url: /api/2.0/mlflow/model-versions/search?filter=name%3D%27novamercado-ventas%27&max_results=10000 (Caused by NameResolutionError(\"HTTPConnection(host='mlflow', port=5000): Failed to resolve 'mlflow' ([Errno -3] Temporary failure in name resolution)\"))"
+   },
+   "t_visto": 1794689353.79586,
+   "duracion": 44.44523239135742
+  },
+  {
+   "dia": 50,
+   "tipo": "programado",
+   "clave": "sim-d14fdcfe-r7",
+   "id": "nm-0e6e237b-960a-49b6-9c24-dc25e914485e",
+   "t_intencion": 1794689387.1919174,
+   "t_202": 1794689387.570549,
+   "terminal": {
+    "estado": "exitoso",
+    "promovido": true,
+    "version": "8",
+    "motivo": "Costo en validación 41,166 del candidato vs 41,312 del vigente (14 días, 1669 filas)"
+   },
+   "t_visto": 1794689680.8240304,
+   "duracion": 291.3894476890564,
+   "promocion_s": 4.4
+  },
+  {
+   "dia": 57,
+   "tipo": "programado",
+   "clave": "sim-d14fdcfe-r8",
+   "id": "nm-92f4c572-11f0-4e3c-8030-c455ba741248",
+   "t_intencion": 1794689683.2756078,
+   "t_202": 1794689683.8866065,
+   "terminal": {
+    "estado": "exitoso",
+    "promovido": false,
+    "version": "8",
+    "motivo": "datos nuevos insuficientes para comparar con el vigente (2 < 7 días); no se reemplaza el vigente (versión 8)"
+   },
+   "t_visto": 1794689939.8101077,
+   "duracion": 253.27915143966675
+  },
+  {
+   "dia": 64,
+   "tipo": "programado",
+   "clave": "sim-d14fdcfe-r9",
+   "id": "nm-24fb9a64-1973-408c-a5aa-17a05e3aa38d",
+   "t_intencion": 1794690139.9039543,
+   "t_202": 1794690140.7068818,
+   "terminal": {
+    "estado": "exitoso",
+    "promovido": false,
+    "version": "8",
+    "motivo": "Costo en validación 44,916 del candidato vs 44,900 del vigente (14 días, 1676 filas); no se reemplaza el vigente (versión 8)"
+   },
+   "t_visto": 1794690452.8069787,
+   "duracion": 309.3055202960968
+  },
+  {
+   "dia": 71,
+   "tipo": "programado",
+   "clave": "sim-d14fdcfe-r10",
+   "id": "nm-1579b09a-9cc3-4bd7-990e-b6c60ad6b423",
+   "t_intencion": 1794690454.6824205,
+   "t_202": 1794690455.2251318,
+   "terminal": {
+    "estado": "exitoso",
+    "promovido": true,
+    "version": "11",
+    "motivo": "Costo en validación 66,722 del candidato vs 66,953 del vigente (21 días, 2512 filas)"
+   },
+   "t_visto": 1794690773.901295,
+   "duracion": 315.33125138282776,
+   "promocion_s": 16.4
+  },
+  {
+   "dia": 78,
+   "tipo": "programado",
+   "clave": "sim-d14fdcfe-r11",
+   "id": "nm-f43351da-ded1-4b9a-b5ec-f194c0009be7",
+   "t_intencion": 1794690786.5102756,
+   "t_202": 1794690786.9626184,
+   "terminal": {
+    "estado": "exitoso",
+    "promovido": true,
+    "version": "12",
+    "motivo": "Costo en validación 21,215 del candidato vs 21,215 del vigente (7 días, 838 filas)"
+   },
+   "t_visto": 1794691082.456904,
+   "duracion": 291.75818157196045,
+   "promocion_s": 10.0
+  },
+  {
+   "dia": 85,
+   "tipo": "programado",
+   "clave": "sim-d14fdcfe-r12",
+   "id": "nm-00a86acb-4bd7-4aea-a2fa-1d49bba24b64",
+   "t_intencion": 1794691088.3146696,
+   "t_202": 1794691089.5166838,
+   "terminal": {
+    "estado": "exitoso",
+    "promovido": false,
+    "version": "12",
+    "motivo": "datos nuevos insuficientes para comparar con el vigente (6 < 7 días); no se reemplaza el vigente (versión 12)"
+   },
+   "t_visto": 1794691368.5887141,
+   "duracion": 275.1649169921875
+  }
+ ],
+ "solicitudes": {
+  "prediccion/principal/422": 112,
+  "prediccion/reenvio_limpio/200": 112,
+  "prediccion/principal/200": 788,
+  "observacion/principal/200": 835,
+  "observacion/principal/422": 65,
+  "observacion/reenvio_limpio/200": 65,
+  "prediccion/repeticion/200": 40,
+  "observacion/repeticion/200": 39
+ },
+ "defectos": {
+  "tienda_booleana": 9,
+  "valor_coma_decimal_cero": 10,
+  "cuerpo_lista": 8,
+  "tienda_varios_numeros": 10,
+  "campo_repetido_distinto": 14,
+  "fecha_ilegible": 4,
+  "campo_errata": 17,
+  "tienda_prefijo": 14,
+  "valor_booleano": 2,
+  "fecha_inexistente": 6,
+  "item_no_objeto": 19,
+  "fecha_mm_dd": 11,
+  "cuerpo_no_json": 13,
+  "familia_separadores": 8,
+  "tienda_palabra": 12,
+  "fecha_sin_ceros": 6,
+  "valor_fraccion": 6,
+  "tienda_inexistente": 10,
+  "tienda_decimal": 11,
+  "campo_generico": 11,
+  "fecha_barras": 10,
+  "tienda_negativa": 13,
+  "campo_mayusculas": 14,
+  "fecha_compacta": 7,
+  "ninguna_venta_valida": 16,
+  "fecha_antes_apertura": 9,
+  "tienda_texto": 10,
+  "familia_mayusculas": 4,
+  "fecha_anio_dos_digitos": 3,
+  "campo_desconocido": 13,
+  "valor_decimal_entero": 9,
+  "campo_item_sinonimo": 7,
+  "valor_ausente": 8,
+  "familia_nombre_catalogo": 4,
+  "faltan_familias": 10,
+  "lista_vacia": 17,
+  "lista_como_objeto": 15,
+  "valor_texto_con_espacios": 4,
+  "tienda_ausente": 11,
+  "fecha_ausente": 11,
+  "familia_repetida_distinta": 19,
+  "campo_camel": 13,
+  "tienda_espacios_unicode": 8,
+  "familia_repetida_igual": 12,
+  "valor_texto": 4,
+  "campo_repetido_igual": 15,
+  "familia_parecida": 4,
+  "valor_miles": 5,
+  "fecha_dd_mm": 9,
+  "campo_sinonimo": 13,
+  "fecha_espacios": 10,
+  "fecha_puntos": 7,
+  "campo_item_generico": 5,
+  "tienda_decimal_entero": 13,
+  "familia_irreconocible": 16,
+  "fecha_con_hora": 5,
+  "valor_negativo": 6,
+  "fecha_mes_nombre": 3,
+  "valor_nulo": 4,
+  "valor_no_numerico": 5
+ },
+ "manifiesto": "482f9c14fa5e57283a06d8015c52261f7952621b09e472420485f946f372bb4f",
+ "recalculo": {
+  "costo_servicio": 302227.90000000014,
+  "costo_referencia": 603387.8,
+  "filas": 10800
+ }
+}
