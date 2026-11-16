@@ -166,7 +166,11 @@ services:
         condition: service_completed_successfully
       mlflow:
         condition: service_healthy
-    restart: "no"
+    # Etapa 9: si el entrenamiento termina con error (p. ej. concesión perdida por un bloqueo
+    # transitorio, código 6), Docker lo relanza. Mientras la concesión anterior no vence (60 s)
+    # el relanzamiento sale con 5 (ocupado); con el retroceso de Docker (0,1 s, doble cada vez)
+    # 10 intentos cubren más de 60 s. Al terminar con 0 no se relanza (DECISIONES.md §18).
+    restart: on-failure:10
 
   # API (puerto 8000). No espera al entrenamiento: arranca con /health en 503 (sin modelo)
   # y carga el primer modelo sola, sin reinicio, en cuanto PostgreSQL lo confirma.

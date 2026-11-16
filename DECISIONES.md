@@ -1347,9 +1347,10 @@ cantidades (venta esperada con tolerancia 1e-9).
 
 * **Versión entregada:** tag anotado `entrega-lab2` sobre el merge de la etapa 9. El código del
   producto (`app/`, `ml/`, `dags/`, `docker/`, `migraciones/`, `requirements/`, `Dockerfile*`,
-  `.env.example`) es idéntico al del commit `1ff3243` que aprobó la simulación de 90 días. El
-  **único** cambio del producto es declarativo, en `docker-compose.yml` (abajo); la etapa 9
-  además agrega documentación, evidencia, una prueba y un script de solo lectura.
+  `.env.example`) es idéntico al del commit `1ff3243` que aprobó la simulación de 90 días. Los
+  **únicos** cambios del producto son declarativos, en `docker-compose.yml`: una construcción
+  por imagen y la política de reinicio de `entrenamiento-inicial` (abajo); la etapa 9 además
+  agrega documentación, evidencia, una prueba y un script de solo lectura.
 * **Una sola construcción por imagen (`docker-compose.yml`):** antes, seis servicios declaraban
   `build:` con dos etiquetas (`preparar`, `entrenamiento-inicial` y `api` la de la aplicación;
   `airflow-init`, `airflow-scheduler` y `airflow-webserver` la de Airflow). Con Compose v5.0.1
@@ -1362,9 +1363,21 @@ cantidades (venta esperada con tolerancia 1e-9).
   contenido y el comportamiento de las imágenes tampoco. *Alternativas descartadas:*
   `COMPOSE_BAKE=false` (no lo evita en Compose v5) y documentar dos `build` explícitos en el
   README (un `up --build` habitual seguiría fallando).
+* **Reinicio de `entrenamiento-inicial` (`restart: on-failure:10`):** en el recorrido como
+  evaluador, un bloqueo del entorno de ~26 s (registrado por los heartbeats de Airflow) hizo
+  fallar un sondeo de la concesión durante el primer entrenamiento; por diseño (§15) eso es
+  concesión perdida y el proceso sale con 6. Con `restart: "no"` el producto quedaba sin
+  modelo indefinidamente (la reconciliación no entrena). Ahora Docker lo relanza: mientras la
+  concesión anterior no vence (60 s) sale con 5 (ocupado) y, con el retroceso de Docker
+  (0,1 s, doble cada vez), 10 intentos cubren más de 60 s; luego toma la concesión y entrena.
+  Al terminar con 0 no se relanza; `docker compose run --rm` (pruebas) no aplica la política.
+  No cambia la lógica de la concesión ni del arranque. *Alternativas descartadas:* tolerar un
+  sondeo fallido en `bloqueo.py` o que la reconciliación entrene el primer modelo (cambios
+  funcionales de las etapas 6 y 7). Límite: las salidas permanentes (2, 3) también se relanzan,
+  como mucho 10 veces.
 * **Evidencia:** índice en el README ("Evidencia de funcionamiento"). La oficial está en
-  `reportes/simulacion/` (11 de 11 criterios) y `reportes/entrega/`; la prueba con cambio de
-  demanda (`reportes/cambio_demanda/`) es informativa y no altera la oficial.
+  `reportes/simulacion/` (11 de 11 criterios) y `reportes/entrega/`. La prueba informativa
+  con el escenario `cambio_demanda` no se ejecutó en esta entrega.
 * **Verificación como evaluador:** clon limpio del commit candidato en HEAD separado (como al
   clonar el tag), `raw/` y archivo de entorno fuera del clon, solo los comandos del README
   (`reportes/entrega/verificacion.md`).

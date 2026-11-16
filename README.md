@@ -62,6 +62,7 @@ docker compose up -d --build
 |---|---|
 | `preparar` termina con "faltan los archivos publicados" | coloque los CSV en `raw/` y vuelva a ejecutar `docker compose up -d` |
 | `preparar` termina con "cambió desde que se cargó" | `raw/` tiene otro contenido que el ya cargado; no se mezclan versiones (restaure los archivos originales) |
+| `entrenamiento-inicial` se reinicia | si terminó con error (p. ej. 6, concesión perdida por un bloqueo transitorio), Docker lo relanza hasta 10 veces; con 5 espera a que venza la concesión anterior (60 s) |
 | `entrenamiento-inicial` sale con código 2 | la imagen se construyó con cambios sin confirmar: confirme o descarte los cambios y `docker compose build` |
 | `/health` sigue en 503 | `docker compose logs entrenamiento-inicial` (código 3: ningún modelo superó las validaciones) |
 | `/health` degradado con "Airflow no disponible" | `docker compose logs airflow-init airflow-scheduler airflow-webserver` (¿falta o es inválida `AIRFLOW_FERNET_KEY`?) |
@@ -328,8 +329,7 @@ python -m simulador ejecutar --escenario corto        # 14 días sintéticos (lo
   garantizado: con 3,9 GB el equipo agotó el swap y las dos reproducciones fallaron por
   bloqueos del entorno (ver `reportes/simulacion/LEEME.md`).
 * **Evidencia de la entrega:** `reportes/simulacion/` (informe agregado de la ejecución
-  aceptada, sin ventas reales). La prueba informativa del escenario `cambio_demanda` está
-  aparte, en `reportes/cambio_demanda/`.
+  aceptada, sin ventas reales).
 
 ## Evidencia de funcionamiento
 
@@ -340,7 +340,6 @@ python -m simulador ejecutar --escenario corto        # 14 días sintéticos (lo
 | Ejecuciones del DAG de reentrenamiento y su resultado en `/admin/reentrenar/{id}` | `reportes/entrega/airflow.md` (+ `.json`) |
 | Respuestas de la API ante solicitudes válidas, E01–E10 y defectos fuera del catálogo (datos sintéticos) | `reportes/entrega/api.md` (+ `.json`) |
 | Simulación de 90 días (criterios 1–11) | `reportes/simulacion/` |
-| Prueba informativa con cambio de demanda (no oficial) | `reportes/cambio_demanda/` |
 | Auditoría de datos y secretos del repositorio | `reportes/entrega/auditoria.md` |
 | Backtesting de modelos | `reportes/etapa2/` |
 
@@ -383,7 +382,6 @@ scripts/          experimento, verificación de persistencia, producto y simulad
                   exportación de evidencia (solo lectura)
 reportes/etapa2/  resultados del backtesting
 reportes/simulacion/  informe agregado de la reproducción de 90 días (etapa 8)
-reportes/cambio_demanda/  prueba informativa con cambio de demanda (etapa 9)
 reportes/entrega/ evidencia de la entrega: verificación, MLflow, Airflow, API y auditoría (etapa 9)
 requirements/     comun.txt, api.txt, dev.txt (versiones fijas) y api.lock.txt (todas, con hashes)
 tests/
