@@ -3,6 +3,17 @@
 Cada decisión indica la alternativa considerada y su justificación. El contrato
 del Anexo tiene prioridad sobre cualquier decisión de implementación.
 
+**Temas que exige el enunciado:**
+
+| Tema | Sección |
+|---|---|
+| Política ante cada tipo de problema en los datos | §2 (arquitectura), §3 (política), §9 (promociones atípicas), §13 (API) |
+| Información que usa el modelo al predecir | §5 (y §10, promociones al reentrenar) |
+| Elección de la cantidad sugerida | §7 |
+| Criterio de reemplazo del modelo | §14 "Evaluación, criterio y alias" (C1–C3, D1, T1–T4b) y §16 "Criterio de reemplazo R2" |
+
+Entrega, evidencia y limitaciones conocidas: §18.
+
 ## 1. Versiones y entorno (D4)
 
 | Componente | Versión fijada |
@@ -1332,6 +1343,73 @@ cantidades (venta esperada con tolerancia 1e-9).
   relacionados con la memoria (`reportes/simulacion/LEEME.md`). Sin cambios en el producto ni en los
   criterios.
 
-## Pendientes de decidir (etapas siguientes)
+## 18. Entrega (etapa 9)
 
-No quedan decisiones abiertas de las etapas 0–8. Etapa 9: documentación final y tag.
+* **Versión entregada:** tag anotado `entrega-lab2` sobre el merge de la etapa 9. El código del
+  producto (`app/`, `ml/`, `dags/`, `docker/`, `migraciones/`, `requirements/`, `Dockerfile*`,
+  `.env.example`) es idéntico al del commit `1ff3243` que aprobó la simulación de 90 días. Los
+  **únicos** cambios del producto son declarativos, en `docker-compose.yml`: una construcción
+  por imagen y la política de reinicio de `entrenamiento-inicial` (abajo); la etapa 9 además
+  agrega documentación, evidencia, una prueba y un script de solo lectura.
+* **Una sola construcción por imagen (`docker-compose.yml`):** antes, seis servicios declaraban
+  `build:` con dos etiquetas (`preparar`, `entrenamiento-inicial` y `api` la de la aplicación;
+  `airflow-init`, `airflow-scheduler` y `airflow-webserver` la de Airflow). Con Compose v5.0.1
+  (buildx 0.30.1) y el almacén containerd de Docker Desktop 29.1.3, `docker compose up -d
+  --build` los construía en paralelo y el primer build fallaba con `image ... already exists`
+  (reproducido con etiquetas nuevas; en la CI, con el almacén clásico, no ocurría). Ahora solo
+  `api` y `airflow-webserver` declaran `build:` (los mismos servicios con los que el simulador
+  construye cada imagen, `simulador/imagenes.py`); los otros cuatro usan la misma etiqueta con
+  `pull_policy: never`. El contexto, el Dockerfile y la etiqueta no cambian, así que el
+  contenido y el comportamiento de las imágenes tampoco. *Alternativas descartadas:*
+  `COMPOSE_BAKE=false` (no lo evita en Compose v5) y documentar dos `build` explícitos en el
+  README (un `up --build` habitual seguiría fallando).
+* **Reinicio de `entrenamiento-inicial` (`restart: on-failure:10`):** en el recorrido como
+  evaluador, un bloqueo del entorno de ~26 s (registrado por los heartbeats de Airflow) hizo
+  fallar un sondeo de la concesión durante el primer entrenamiento; por diseño (§15) eso es
+  concesión perdida y el proceso sale con 6. Con `restart: "no"` el producto quedaba sin
+  modelo indefinidamente (la reconciliación no entrena). Ahora Docker lo relanza: mientras la
+  concesión anterior no vence (60 s) sale con 5 (ocupado) y, con el retroceso de Docker
+  (0,1 s, doble cada vez), 10 intentos cubren más de 60 s; luego toma la concesión y entrena.
+  Al terminar con 0 no se relanza; `docker compose run --rm` (pruebas) no aplica la política.
+  No cambia la lógica de la concesión ni del arranque. *Alternativas descartadas:* tolerar un
+  sondeo fallido en `bloqueo.py` o que la reconciliación entrene el primer modelo (cambios
+  funcionales de las etapas 6 y 7). Límite: las salidas permanentes (2, 3) también se relanzan,
+  como mucho 10 veces.
+* **Evidencia:** índice en el README ("Evidencia de funcionamiento"). La oficial está en
+  `reportes/simulacion/` (11 de 11 criterios) y `reportes/entrega/`. La prueba informativa
+  con el escenario `cambio_demanda` no se ejecutó en esta entrega.
+* **Verificación como evaluador:** clon limpio del commit candidato en HEAD separado (como al
+  clonar el tag), `raw/` y archivo de entorno fuera del clon, solo los comandos del README.
+  Sus resultados se entregan fuera del repositorio.
+* **Datos fuera del repositorio:** `tests/unit/test_reportes_sin_datos.py` revisa los
+  archivos actuales de `reportes/` (ventas y secretos).
+* **DVC (descartado):** el enunciado no lo exige y versionar `raw/` necesitaría un
+  almacenamiento remoto con datos que no se pueden publicar; los datos se identifican por
+  su SHA-256 (`cargas_datos`, manifiesto de cada entrenamiento).
+
+### Limitaciones conocidas
+
+* **COMMIT incierto** (§13): si PostgreSQL deja de responder tras recibir el `COMMIT`, la API
+  responde 503 aunque la fila quede guardada. Se observó una vez en la simulación con poca
+  memoria (`reportes/simulacion/LEEME.md`).
+* **Memoria:** la simulación completa se aprobó con unos 6 GB para Docker/WSL; con 3,9 GB
+  hubo bloqueos del entorno. No es un mínimo garantizado.
+* **Arranque en el equipo local (etapa 9):** en el recorrido final como evaluador (clon limpio,
+  datos publicados, `docker compose up -d --build`) el producto quedó listo en **693 s** desde
+  la creación de los contenedores, por encima de los 600 s del enunciado: dos bloqueos del
+  entorno hicieron perder la concesión del primer entrenamiento y `restart: on-failure:10` lo
+  relanzó dos veces, sin intervención (al tercer intento, unos 6 min, promovió la versión 1).
+  El equipo tenía 8 GB de RAM, 6 GB asignados a WSL y menos de 600 MB libres en Windows. Sin
+  bloqueos, el mismo arranque con los datos publicados tardó 256–290 s (etapa 8,
+  `reportes/simulacion/`), y en la CI (runner de GitHub, datos sintéticos) `/health` llegó a
+  ok en 92 s. La diferencia es del entorno, no del producto, pero con un equipo así de justo
+  de memoria el límite de 10 minutos puede no cumplirse.
+* **Sin autenticación** en la API y en MLflow (§14): se publican solo en `127.0.0.1` por
+  defecto; Airflow usa autenticación básica.
+* **Historial de Git:** el commit `6e60def` (etapa 8) contiene, en
+  `reportes/simulacion/ejemplos.json`, mensajes con valores de ventas reales; lo corrigió
+  `a9c9b1f` y se mantiene en el historial por decisión del responsable.
+
+## Pendientes de decidir
+
+No quedan decisiones abiertas.

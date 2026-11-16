@@ -1,0 +1,218 @@
+{
+ "experimentos": [
+  {
+   "id": "1",
+   "nombre": "novamercado-entrenamiento",
+   "estado": "active"
+  },
+  {
+   "id": "0",
+   "nombre": "Default",
+   "estado": "active"
+  }
+ ],
+ "ejecuciones": [
+  {
+   "run_id": "156b8eac808244a7852c43ba222c9577",
+   "nombre": "traveling-colt-517",
+   "estado": "FAILED",
+   "inicio": "2026-11-16T04:13:51+00:00",
+   "fin": "2026-11-16T04:15:17+00:00",
+   "metricas": {},
+   "parametros": {
+    "config.dias_calibracion": "56",
+    "config.dias_minimos_historia": "28",
+    "config.estrategia": "mult_familia",
+    "config.modelo": "hgb_relativo",
+    "config.semilla": "0",
+    "corte": "2026-03-01",
+    "evaluacion.cortes": "7",
+    "evaluacion.fraccion_cortes_ganados": "0.6666666666666666",
+    "evaluacion.horizonte": "28",
+    "evaluacion.mejora_minima": "0.05",
+    "evaluacion.minimo_cortes": "3",
+    "evaluacion.perdida_maxima_corte": "0.1",
+    "hilos_entrenamiento": "1"
+   },
+   "tags": {
+    "codigo_verificado": "true",
+    "criterio": "candidato",
+    "epoca_bloqueo": "2",
+    "estrategia": "mult_familia",
+    "git_commit": "f625c7965cab6e920dcc7c1876fa3fa803b33f39",
+    "git_limpio": "true",
+    "huella_datos": "2dd72010e95cfb3bd11622edbd8d8696e6fb8fdbb17aa975e559ab47c8d1a25e",
+    "imagen_base": "python:3.11.18-slim-bookworm@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be570439e3b39",
+    "mlflow.runName": "traveling-colt-517",
+    "mlflow.source.name": "/app/app/modelo/trabajo_entrenamiento.py",
+    "mlflow.source.type": "LOCAL",
+    "mlflow.user": "app",
+    "modelo": "hgb_relativo",
+    "motivo_fallo": "huérfana: época 2",
+    "origen": "arranque",
+    "procedencia": "imagen"
+   }
+  },
+  {
+   "run_id": "6807a13fb61d4034a3777e23eb17a967",
+   "nombre": "rare-ox-900",
+   "estado": "FINISHED",
+   "inicio": "2026-11-16T04:16:45+00:00",
+   "fin": "2026-11-16T04:20:47+00:00",
+   "metricas": {
+    "cortes_ganados": 7.0,
+    "cortes_requeridos": 5.0,
+    "costo_total_baseline": 879479.2999999999,
+    "costo_total_baseline_dow4": 108793.1,
+    "costo_total_candidato": 628813.2,
+    "costo_total_hgb_relativo": 88655.5,
+    "mae_baseline_dow4": 45.89635416666667,
+    "mae_hgb_relativo": 37.37942982865697,
+    "mejora_pct": 28.50164864596586,
+    "n_cortes": 7.0,
+    "peor_corte_pct": -17.014410173513383,
+    "segundos_backtest": 112.2292946880043,
+    "segundos_t4a": 102.85418021900114,
+    "segundos_total": 245.32451655900513,
+    "tasa_quiebre_baseline_dow4": 0.33363095238095236,
+    "tasa_quiebre_hgb_relativo": 0.28541666666666665,
+    "wape_baseline_dow4": 0.2147272600689247,
+    "wape_hgb_relativo": 0.17488061297634616
+   },
+   "parametros": {
+    "config.dias_calibracion": "56",
+    "config.dias_minimos_historia": "28",
+    "config.estrategia": "mult_familia",
+    "config.modelo": "hgb_relativo",
+    "config.semilla": "0",
+    "corte": "2026-03-01",
+    "evaluacion.cortes": "7",
+    "evaluacion.fraccion_cortes_ganados": "0.6666666666666666",
+    "evaluacion.horizonte": "28",
+    "evaluacion.mejora_minima": "0.05",
+    "evaluacion.minimo_cortes": "3",
+    "evaluacion.perdida_maxima_corte": "0.1",
+    "hilos_entrenamiento": "1"
+   },
+   "tags": {
+    "codigo_verificado": "true",
+    "criterio": "candidato",
+    "epoca_bloqueo": "4",
+    "estrategia": "mult_familia",
+    "git_commit": "f625c7965cab6e920dcc7c1876fa3fa803b33f39",
+    "git_limpio": "true",
+    "huella_datos": "2dd72010e95cfb3bd11622edbd8d8696e6fb8fdbb17aa975e559ab47c8d1a25e",
+    "imagen_base": "python:3.11.18-slim-bookworm@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be570439e3b39",
+    "mlflow.runName": "rare-ox-900",
+    "mlflow.source.name": "/app/app/modelo/trabajo_entrenamiento.py",
+    "mlflow.source.type": "LOCAL",
+    "mlflow.user": "app",
+    "modelo": "hgb_relativo",
+    "motivo": "costo 628,813 vs 879,479 del baseline (28.5 % menos); gana 7/7 cortes; peor corte -17.0 %",
+    "origen": "arranque",
+    "procedencia": "imagen",
+    "sha256_artefacto": "d3bbef9291fee60af7e73de26908c8825c5e5e55de4c2003a473dbad57994004",
+    "sha256_backtest": "9b3ea12aff16cd34db1db41fbfee3de757d9fe0cb2d161806bca1c21a511fa8e",
+    "verificacion": "superada",
+    "version_registrada": "1"
+   }
+  },
+  {
+   "run_id": "73457a30e0364536bf83541c40f852e7",
+   "nombre": "rogue-ram-136",
+   "estado": "FAILED",
+   "inicio": "2026-11-16T04:22:49+00:00",
+   "fin": "2026-11-16T04:27:28+00:00",
+   "metricas": {},
+   "parametros": {
+    "config.dias_calibracion": "56",
+    "config.dias_minimos_historia": "28",
+    "config.estrategia": "mult_familia",
+    "config.modelo": "hgb_relativo",
+    "config.semilla": "0",
+    "corte": "2026-04-15",
+    "evaluacion.cortes": "7",
+    "evaluacion.fraccion_cortes_ganados": "0.6666666666666666",
+    "evaluacion.horizonte": "28",
+    "evaluacion.mejora_minima": "0.05",
+    "evaluacion.minimo_cortes": "3",
+    "evaluacion.perdida_maxima_corte": "0.1",
+    "hilos_entrenamiento": "1"
+   },
+   "tags": {
+    "codigo_verificado": "true",
+    "criterio": "candidato",
+    "epoca_bloqueo": "5",
+    "estrategia": "mult_familia",
+    "git_commit": "f625c7965cab6e920dcc7c1876fa3fa803b33f39",
+    "git_limpio": "true",
+    "huella_datos": "8f62d149c1910b329955a4e63c46f0db1d47436a03626d4573de193e50bad59b",
+    "imagen_base": "apache/airflow:2.10.5-python3.11@sha256:b16e19f925ae0dcabaa2271b37212891ed68bf74e26c2db61f46dddd7d502937",
+    "mlflow.runName": "rogue-ram-136",
+    "mlflow.source.name": "/opt/novamercado/app/modelo/trabajo_entrenamiento.py",
+    "mlflow.source.type": "LOCAL",
+    "mlflow.user": "airflow",
+    "modelo": "hgb_relativo",
+    "motivo_fallo": "huérfana: época 5",
+    "origen": "reentrenamiento",
+    "procedencia": "imagen",
+    "reentrenamiento": "nm-cfbcce72-5e2a-4733-9b4e-b6f260b24490"
+   }
+  }
+ ],
+ "modelo_registrado": "novamercado-ventas",
+ "alias": {
+  "vigente": "1"
+ },
+ "versiones": [
+  {
+   "version": 1,
+   "run_id": "6807a13fb61d4034a3777e23eb17a967",
+   "estado": "READY",
+   "creada": "2026-11-16T04:19:03+00:00",
+   "tags": {
+    "codigo_verificado": "true",
+    "condiciones": "{\"C1\": true, \"C2\": true, \"C3\": true, \"D1\": true, \"T1\": true, \"T2\": true, \"T3\": true, \"T4a\": true, \"T4b\": true}",
+    "corte": "2026-03-01",
+    "criterio": "candidato",
+    "decision_id": "1",
+    "epoca_bloqueo": "4",
+    "epoca_promocion": "4",
+    "estado": "valido",
+    "git_commit": "f625c7965cab6e920dcc7c1876fa3fa803b33f39",
+    "huella_datos": "2dd72010e95cfb3bd11622edbd8d8696e6fb8fdbb17aa975e559ab47c8d1a25e",
+    "imagen_base": "python:3.11.18-slim-bookworm@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be570439e3b39",
+    "motivo": "costo 628,813 vs 879,479 del baseline (28.5 % menos); gana 7/7 cortes; peor corte -17.0 %",
+    "origen": "arranque",
+    "procedencia": "imagen",
+    "promovido_por": "arranque:si_no_hay",
+    "ruta_artefacto": "modelo/artifacts/modelo.joblib",
+    "sha256_artefacto": "d3bbef9291fee60af7e73de26908c8825c5e5e55de4c2003a473dbad57994004",
+    "sha256_backtest": "9b3ea12aff16cd34db1db41fbfee3de757d9fe0cb2d161806bca1c21a511fa8e",
+    "verificacion": "superada"
+   }
+  }
+ ],
+ "decisiones_postgresql": [
+  {
+   "decision_id": 1,
+   "version": "1",
+   "run_id": "6807a13fb61d4034a3777e23eb17a967",
+   "sha256_artefacto": "d3bbef9291fee60af7e73de26908c8825c5e5e55de4c2003a473dbad57994004",
+   "origen": "arranque",
+   "creada_en": "2026-11-16T04:20:52.717117+00:00",
+   "resultado": "confirmada",
+   "motivo": "costo 628,813 vs 879,479 del baseline (28.5 % menos); gana 7/7 cortes; peor corte -17.0 %",
+   "secuencia": 1,
+   "resuelta_en": "2026-11-16T04:20:52.922868+00:00"
+  }
+ ],
+ "api_modelo": {
+  "nombre": "novamercado-ventas",
+  "alias": "vigente",
+  "version": "1",
+  "es_vigente": true,
+  "estado_vigencia": "vigente",
+  "version_vigente": "1"
+ }
+}

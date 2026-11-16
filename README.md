@@ -7,9 +7,23 @@ producto, sugiere la cantidad a tener disponible según el costo de faltantes y
 sobrantes, se defiende de datos defectuosos, registra la operación y se
 reentrena automáticamente.
 
-> **Estado:** etapas 0–6 integradas (calidad de datos, contrato, modelos,
-> backtesting, persistencia, CI, API, MLflow y producto con Docker Compose).
-> Etapa 7 (reentrenamiento con Airflow) en revisión.
+> **Estado:** versión de entrega (tag `entrega-lab2`). Etapas 0–9 completas: calidad de
+> datos, contrato, modelos y backtesting, persistencia, API, MLflow, Docker Compose,
+> reentrenamiento con Airflow, simulador de operación y evidencia de funcionamiento
+> ([Evidencia de funcionamiento](#evidencia-de-funcionamiento)).
+
+## Para el evaluador (resumen)
+
+1. Clone el tag: `git clone --branch entrega-lab2 https://github.com/XiomRB/NovaMercado.git`
+   (no descargue un ZIP: la imagen registra el commit del que se construye).
+2. Coloque los archivos publicados en `raw/` dentro del clon, o en cualquier carpeta
+   externa indicada con `RAW_DIR` (ver [Datos publicados](#datos-publicados)).
+3. Cree el archivo de entorno a partir de `.env.example`: cambie las claves y genere
+   `AIRFLOW_FERNET_KEY` (el valor de ejemplo no es válido).
+4. `docker compose up -d --build` (o con `--env-file` si el archivo está fuera del clon).
+5. Espere `GET http://127.0.0.1:8000/health` con `"estado": "ok"` (unos minutos; límite: 10).
+
+Memoria recomendada para Docker/WSL: unos 6 GB (ver [Simulador](#simulador-de-operación-etapa-8)).
 
 ## Levantar el producto desde cero (etapas 6 y 7)
 
@@ -48,6 +62,7 @@ docker compose up -d --build
 |---|---|
 | `preparar` termina con "faltan los archivos publicados" | coloque los CSV en `raw/` y vuelva a ejecutar `docker compose up -d` |
 | `preparar` termina con "cambió desde que se cargó" | `raw/` tiene otro contenido que el ya cargado; no se mezclan versiones (restaure los archivos originales) |
+| `entrenamiento-inicial` se reinicia | si terminó con error (p. ej. 6, concesión perdida por un bloqueo transitorio), Docker lo relanza hasta 10 veces; con 5 espera a que venza la concesión anterior (60 s) |
 | `entrenamiento-inicial` sale con código 2 | la imagen se construyó con cambios sin confirmar: confirme o descarte los cambios y `docker compose build` |
 | `/health` sigue en 503 | `docker compose logs entrenamiento-inicial` (código 3: ningún modelo superó las validaciones) |
 | `/health` degradado con "Airflow no disponible" | `docker compose logs airflow-init airflow-scheduler airflow-webserver` (¿falta o es inválida `AIRFLOW_FERNET_KEY`?) |
@@ -93,6 +108,18 @@ raw/
 ```
 
 Si recibió `datos_lab2.zip`, descomprímalo dentro de `raw/`.
+
+**Datos y entorno fuera del clon.** También puede dejar los archivos publicados y el archivo
+de entorno fuera del repositorio (así el árbol de Git queda intacto):
+
+```bash
+cp .env.example /ruta/externa/novamercado.env      # cambie las claves y genere la Fernet
+# en ese archivo: RAW_DIR=/ruta/absoluta/raw
+docker compose --env-file /ruta/externa/novamercado.env up -d --build
+```
+
+Use el mismo `--env-file` en los demás comandos de Compose (`stop`, `start`, `down`,
+`logs`, `exec`). Sin `--env-file`, Compose lee `.env` en la raíz del clon.
 
 ## Entorno de desarrollo
 
@@ -304,6 +331,20 @@ python -m simulador ejecutar --escenario corto        # 14 días sintéticos (lo
 * **Evidencia de la entrega:** `reportes/simulacion/` (informe agregado de la ejecución
   aceptada, sin ventas reales).
 
+## Evidencia de funcionamiento
+
+| Qué | Dónde |
+|---|---|
+| Experimentos, ejecuciones y versiones del modelo en MLflow, alias y decisiones de promoción | `reportes/entrega/mlflow.md` (+ `.json`) |
+| Ejecuciones del DAG de reentrenamiento y su resultado en `/admin/reentrenar/{id}` | `reportes/entrega/airflow.md` (+ `.json`) |
+| Respuestas de la API ante solicitudes válidas y defectuosas | `reportes/simulacion/ejemplos.json` |
+| Simulación de 90 días (criterios 1–11) | `reportes/simulacion/` |
+| Backtesting de modelos | `reportes/etapa2/` |
+
+`mlflow.*` y `airflow.*` se generan con `python scripts/exportar_evidencia.py` (solo lectura)
+sobre un producto levantado. `tests/unit/test_reportes_sin_datos.py` comprueba que
+`reportes/` no contenga ventas reales ni secretos.
+
 ## Experimento de modelos (etapa 2)
 
 ```bash
@@ -314,7 +355,7 @@ Ejecuta el backtesting temporal (7 cortes de 28 días) del baseline y los
 modelos de ML con varias estrategias de cantidad sugerida y escribe las tablas
 en `reportes/etapa2/` (`resultados.md` y CSV). No registra nada en MLflow.
 
-## Estructura actual
+## Estructura
 
 ```
 app/
@@ -335,9 +376,11 @@ migraciones/      Alembic (0001 esquema inicial, 0002 concesión y promociones, 
 dags/             DAG de Airflow (reentrenamiento y reconciliación) y nm_cierre.py (copia de app/db/cierre.py)
 docker/           lanzador (ejecutar) y arranque verificado de los comandos que entrenan
 simulador/        simulador de operación de caja negra (etapa 8; no entra en las imágenes)
-scripts/          experimento, verificación de persistencia, producto y simulador, pruebas locales
+scripts/          experimento, verificación de persistencia, producto y simulador, pruebas locales,
+                  exportación de evidencia (solo lectura)
 reportes/etapa2/  resultados del backtesting
 reportes/simulacion/  informe agregado de la reproducción de 90 días (etapa 8)
+reportes/entrega/ evidencia de MLflow y Airflow (etapa 9)
 requirements/     comun.txt, api.txt, dev.txt (versiones fijas) y api.lock.txt (todas, con hashes)
 tests/
   unit/           pruebas por módulo y de robustez
