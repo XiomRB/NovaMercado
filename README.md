@@ -335,12 +335,10 @@ python -m simulador ejecutar --escenario corto        # 14 días sintéticos (lo
 
 | Qué | Dónde |
 |---|---|
-| Recorrido como evaluador (clon limpio del commit candidato, `raw/` y entorno externos): arranque, ejemplos, reentrenamiento, caída de MLflow, reinicios | `reportes/entrega/verificacion.md` |
 | Experimentos, ejecuciones y versiones del modelo en MLflow, alias y decisiones de promoción | `reportes/entrega/mlflow.md` (+ `.json`) |
 | Ejecuciones del DAG de reentrenamiento y su resultado en `/admin/reentrenar/{id}` | `reportes/entrega/airflow.md` (+ `.json`) |
-| Respuestas de la API ante solicitudes válidas, E01–E10 y defectos fuera del catálogo (datos sintéticos) | `reportes/entrega/api.md` (+ `.json`) |
+| Respuestas de la API ante solicitudes válidas y defectuosas | `reportes/simulacion/ejemplos.json` |
 | Simulación de 90 días (criterios 1–11) | `reportes/simulacion/` |
-| Auditoría de datos y secretos del repositorio | `reportes/entrega/auditoria.md` |
 | Backtesting de modelos | `reportes/etapa2/` |
 
 `mlflow.*` y `airflow.*` se generan con `python scripts/exportar_evidencia.py` (solo lectura)
@@ -382,7 +380,7 @@ scripts/          experimento, verificación de persistencia, producto y simulad
                   exportación de evidencia (solo lectura)
 reportes/etapa2/  resultados del backtesting
 reportes/simulacion/  informe agregado de la reproducción de 90 días (etapa 8)
-reportes/entrega/ evidencia de la entrega: verificación, MLflow, Airflow, API y auditoría (etapa 9)
+reportes/entrega/ evidencia de MLflow y Airflow (etapa 9)
 requirements/     comun.txt, api.txt, dev.txt (versiones fijas) y api.lock.txt (todas, con hashes)
 tests/
   unit/           pruebas por módulo y de robustez

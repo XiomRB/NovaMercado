@@ -1,8 +1,6 @@
 """Los reportes publicados no contienen ventas reales ni secretos (etapa 9, E9-3).
 
-Los patrones de este módulo son los mismos que usa la auditoría de la entrega. La auditoría
-los importa y los aplica además a los blobs históricos de ``reportes/``; esta prueba revisa
-solo los archivos actuales de ``reportes/``. Nunca lee ``raw/``.
+Revisa los archivos actuales de ``reportes/``. Nunca lee ``raw/``.
 
 * **Ventas en texto:** ``ventas[i].ventas=<n>``, "venta negativa <n>" y, en las entradas de
   calidad cuyo ``campo`` es ``ventas`` o ``ventas[i]...``, cualquier número del ``detalle``.

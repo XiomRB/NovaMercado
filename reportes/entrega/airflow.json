@@ -1,0 +1,58 @@
+{
+ "dag": {
+  "dag_id": "novamercado_reentrenamiento",
+  "pausado": false,
+  "programacion": null
+ },
+ "ejecuciones": [
+  {
+   "dag_run_id": "nm-cfbcce72-5e2a-4733-9b4e-b6f260b24490",
+   "estado": "failed",
+   "inicio": "2026-11-16T04:21:53.459098+00:00",
+   "fin": "2026-11-16T04:23:49.911345+00:00",
+   "segundos": 116.5,
+   "tareas": [
+    {
+     "tarea": "marcar_inicio",
+     "estado": "success",
+     "segundos": 0.866707
+    },
+    {
+     "tarea": "reentrenar",
+     "estado": "failed",
+     "segundos": 106.200889
+    },
+    {
+     "tarea": "registrar_resultado",
+     "estado": "success",
+     "segundos": 1.734631
+    },
+    {
+     "tarea": "vigilante",
+     "estado": "failed",
+     "segundos": 0.911896
+    }
+   ],
+   "admin_reentrenar": {
+    "estado": "fallido",
+    "promovido": false,
+    "version": "1",
+    "motivo": "se perdió la concesión de entrenamiento: se perdió la concesión de la época 5 durante el entrenamiento"
+   },
+   "postgresql": {
+    "id": "nm-cfbcce72-5e2a-4733-9b4e-b6f260b24490",
+    "con_clave": true,
+    "solicitado_en": "2026-11-16T04:21:50.690396+00:00",
+    "origen": "api",
+    "iniciada_en": "2026-11-16T04:21:55.461857+00:00",
+    "estado": "fallido",
+    "promovido": false,
+    "version": "1",
+    "motivo": "se perdió la concesión de entrenamiento: se perdió la concesión de la época 5 durante el entrenamiento",
+    "escrito_por": "reentrenar",
+    "terminado_en": "2026-11-16T04:23:38.75673+00:00"
+   }
+  }
+ ],
+ "solicitudes_sin_ejecucion": []
+}

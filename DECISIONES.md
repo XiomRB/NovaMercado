@@ -1379,12 +1379,10 @@ cantidades (venta esperada con tolerancia 1e-9).
   `reportes/simulacion/` (11 de 11 criterios) y `reportes/entrega/`. La prueba informativa
   con el escenario `cambio_demanda` no se ejecutó en esta entrega.
 * **Verificación como evaluador:** clon limpio del commit candidato en HEAD separado (como al
-  clonar el tag), `raw/` y archivo de entorno fuera del clon, solo los comandos del README
-  (`reportes/entrega/verificacion.md`).
+  clonar el tag), `raw/` y archivo de entorno fuera del clon, solo los comandos del README.
+  Sus resultados se entregan fuera del repositorio.
 * **Datos fuera del repositorio:** `tests/unit/test_reportes_sin_datos.py` revisa los
-  archivos actuales de `reportes/` (ventas y secretos); la auditoría
-  (`reportes/entrega/auditoria.md`) aplica los mismos patrones también a los blobs
-  históricos accesibles y busca filas completas de `raw/` en todos ellos.
+  archivos actuales de `reportes/` (ventas y secretos).
 * **DVC (descartado):** el enunciado no lo exige y versionar `raw/` necesitaría un
   almacenamiento remoto con datos que no se pueden publicar; los datos se identifican por
   su SHA-256 (`cargas_datos`, manifiesto de cada entrenamiento).
@@ -1396,12 +1394,21 @@ cantidades (venta esperada con tolerancia 1e-9).
   memoria (`reportes/simulacion/LEEME.md`).
 * **Memoria:** la simulación completa se aprobó con unos 6 GB para Docker/WSL; con 3,9 GB
   hubo bloqueos del entorno. No es un mínimo garantizado.
+* **Arranque en el equipo local (etapa 9):** en el recorrido final como evaluador (clon limpio,
+  datos publicados, `docker compose up -d --build`) el producto quedó listo en **693 s** desde
+  la creación de los contenedores, por encima de los 600 s del enunciado: dos bloqueos del
+  entorno hicieron perder la concesión del primer entrenamiento y `restart: on-failure:10` lo
+  relanzó dos veces, sin intervención (al tercer intento, unos 6 min, promovió la versión 1).
+  El equipo tenía 8 GB de RAM, 6 GB asignados a WSL y menos de 600 MB libres en Windows. Sin
+  bloqueos, el mismo arranque con los datos publicados tardó 256–290 s (etapa 8,
+  `reportes/simulacion/`), y en la CI (runner de GitHub, datos sintéticos) `/health` llegó a
+  ok en 92 s. La diferencia es del entorno, no del producto, pero con un equipo así de justo
+  de memoria el límite de 10 minutos puede no cumplirse.
 * **Sin autenticación** en la API y en MLflow (§14): se publican solo en `127.0.0.1` por
   defecto; Airflow usa autenticación básica.
 * **Historial de Git:** el commit `6e60def` (etapa 8) contiene, en
   `reportes/simulacion/ejemplos.json`, mensajes con valores de ventas reales; lo corrigió
-  `a9c9b1f` y se mantiene en el historial por decisión del responsable (detalle sin valores
-  en `reportes/entrega/auditoria.md`).
+  `a9c9b1f` y se mantiene en el historial por decisión del responsable.
 
 ## Pendientes de decidir
 
