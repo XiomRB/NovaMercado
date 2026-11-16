@@ -58,6 +58,15 @@ esas constraints.
 * `evidencia/` se escribe una vez y `evidencia.sha256` solo al sellar; la limpieza no la borra.
 * Los plazos del enunciado (`simulador/escenario.PLAZOS`) no se relajan.
 
+## Reglas de la etapa 9 (entrega)
+
+* `reportes/` nunca lleva ventas reales ni secretos: `tests/unit/test_reportes_sin_datos.py`
+  (mismos patrones que la auditoría de la entrega). Los ejemplos de observaciones se hacen con
+  `tests/fixtures/ejemplos` (sintéticos).
+* `scripts/exportar_evidencia.py` es de solo lectura (GET, búsquedas de MLflow y `SELECT` en una
+  transacción de solo lectura); no agregarle escrituras.
+* El tag `entrega-lab2` solo lo crea o publica el usuario o un agente con su autorización expresa.
+
 ## Datos (`raw/`)
 
 * `historico_ventas.csv`: `fecha,tienda_id,familia_id,ventas,en_promocion`,
@@ -79,8 +88,8 @@ esas constraints.
 | 5 MLflow (registro, alias, recarga, health) | hecho (PR #5) |
 | 6 Docker Compose + bootstrap | hecho (PR #6) |
 | 7 Airflow DAG + orquestador real de /admin | hecho (PR #7) |
-| 8 Simulador de operación | en revisión (`feat/etapa-8`) |
-| 9 Documentación final y tag `entrega-lab2` | pendiente |
+| 8 Simulador de operación | hecho (PR #8) |
+| 9 Documentación final, evidencia, auditoría y tag `entrega-lab2` | en revisión (`feat/etapa-9`); el tag lo autoriza el usuario tras el merge |
 
 ## Mapa del código
 

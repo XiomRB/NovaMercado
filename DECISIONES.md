@@ -3,6 +3,17 @@
 Cada decisión indica la alternativa considerada y su justificación. El contrato
 del Anexo tiene prioridad sobre cualquier decisión de implementación.
 
+**Temas que exige el enunciado:**
+
+| Tema | Sección |
+|---|---|
+| Política ante cada tipo de problema en los datos | §2 (arquitectura), §3 (política), §9 (promociones atípicas), §13 (API) |
+| Información que usa el modelo al predecir | §5 (y §10, promociones al reentrenar) |
+| Elección de la cantidad sugerida | §7 |
+| Criterio de reemplazo del modelo | §14 "Evaluación, criterio y alias" (C1–C3, D1, T1–T4b) y §16 "Criterio de reemplazo R2" |
+
+Entrega, evidencia y limitaciones conocidas: §18.
+
 ## 1. Versiones y entorno (D4)
 
 | Componente | Versión fijada |
@@ -1332,6 +1343,41 @@ cantidades (venta esperada con tolerancia 1e-9).
   relacionados con la memoria (`reportes/simulacion/LEEME.md`). Sin cambios en el producto ni en los
   criterios.
 
-## Pendientes de decidir (etapas siguientes)
+## 18. Entrega (etapa 9)
 
-No quedan decisiones abiertas de las etapas 0–8. Etapa 9: documentación final y tag.
+* **Versión entregada:** tag anotado `entrega-lab2` sobre el merge de la etapa 9. El código del
+  producto (`app/`, `ml/`, `dags/`, `docker/`, `migraciones/`, `requirements/`,
+  `docker-compose.yml`, `Dockerfile*`, `.env.example`) es idéntico al del commit `1ff3243`
+  que aprobó la simulación de 90 días (diff vacío, comprobado en el candidato y en el merge);
+  la etapa 9 solo agrega documentación, evidencia, una prueba y un script de solo lectura.
+* **Evidencia:** índice en el README ("Evidencia de funcionamiento"). La oficial está en
+  `reportes/simulacion/` (11 de 11 criterios) y `reportes/entrega/`; la prueba con cambio de
+  demanda (`reportes/cambio_demanda/`) es informativa y no altera la oficial.
+* **Verificación como evaluador:** clon limpio del commit candidato en HEAD separado (como al
+  clonar el tag), `raw/` y archivo de entorno fuera del clon, solo los comandos del README
+  (`reportes/entrega/verificacion.md`).
+* **Datos fuera del repositorio:** `tests/unit/test_reportes_sin_datos.py` revisa los
+  archivos actuales de `reportes/` (ventas y secretos); la auditoría
+  (`reportes/entrega/auditoria.md`) aplica los mismos patrones también a los blobs
+  históricos accesibles y busca filas completas de `raw/` en todos ellos.
+* **DVC (descartado):** el enunciado no lo exige y versionar `raw/` necesitaría un
+  almacenamiento remoto con datos que no se pueden publicar; los datos se identifican por
+  su SHA-256 (`cargas_datos`, manifiesto de cada entrenamiento).
+
+### Limitaciones conocidas
+
+* **COMMIT incierto** (§13): si PostgreSQL deja de responder tras recibir el `COMMIT`, la API
+  responde 503 aunque la fila quede guardada. Se observó una vez en la simulación con poca
+  memoria (`reportes/simulacion/LEEME.md`).
+* **Memoria:** la simulación completa se aprobó con unos 6 GB para Docker/WSL; con 3,9 GB
+  hubo bloqueos del entorno. No es un mínimo garantizado.
+* **Sin autenticación** en la API y en MLflow (§14): se publican solo en `127.0.0.1` por
+  defecto; Airflow usa autenticación básica.
+* **Historial de Git:** el commit `6e60def` (etapa 8) contiene, en
+  `reportes/simulacion/ejemplos.json`, mensajes con valores de ventas reales; lo corrigió
+  `a9c9b1f` y se mantiene en el historial por decisión del responsable (detalle sin valores
+  en `reportes/entrega/auditoria.md`).
+
+## Pendientes de decidir
+
+No quedan decisiones abiertas.
