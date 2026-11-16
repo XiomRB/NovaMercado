@@ -1346,10 +1346,22 @@ cantidades (venta esperada con tolerancia 1e-9).
 ## 18. Entrega (etapa 9)
 
 * **Versión entregada:** tag anotado `entrega-lab2` sobre el merge de la etapa 9. El código del
-  producto (`app/`, `ml/`, `dags/`, `docker/`, `migraciones/`, `requirements/`,
-  `docker-compose.yml`, `Dockerfile*`, `.env.example`) es idéntico al del commit `1ff3243`
-  que aprobó la simulación de 90 días (diff vacío, comprobado en el candidato y en el merge);
-  la etapa 9 solo agrega documentación, evidencia, una prueba y un script de solo lectura.
+  producto (`app/`, `ml/`, `dags/`, `docker/`, `migraciones/`, `requirements/`, `Dockerfile*`,
+  `.env.example`) es idéntico al del commit `1ff3243` que aprobó la simulación de 90 días. El
+  **único** cambio del producto es declarativo, en `docker-compose.yml` (abajo); la etapa 9
+  además agrega documentación, evidencia, una prueba y un script de solo lectura.
+* **Una sola construcción por imagen (`docker-compose.yml`):** antes, seis servicios declaraban
+  `build:` con dos etiquetas (`preparar`, `entrenamiento-inicial` y `api` la de la aplicación;
+  `airflow-init`, `airflow-scheduler` y `airflow-webserver` la de Airflow). Con Compose v5.0.1
+  (buildx 0.30.1) y el almacén containerd de Docker Desktop 29.1.3, `docker compose up -d
+  --build` los construía en paralelo y el primer build fallaba con `image ... already exists`
+  (reproducido con etiquetas nuevas; en la CI, con el almacén clásico, no ocurría). Ahora solo
+  `api` y `airflow-webserver` declaran `build:` (los mismos servicios con los que el simulador
+  construye cada imagen, `simulador/imagenes.py`); los otros cuatro usan la misma etiqueta con
+  `pull_policy: never`. El contexto, el Dockerfile y la etiqueta no cambian, así que el
+  contenido y el comportamiento de las imágenes tampoco. *Alternativas descartadas:*
+  `COMPOSE_BAKE=false` (no lo evita en Compose v5) y documentar dos `build` explícitos en el
+  README (un `up --build` habitual seguiría fallando).
 * **Evidencia:** índice en el README ("Evidencia de funcionamiento"). La oficial está en
   `reportes/simulacion/` (11 de 11 criterios) y `reportes/entrega/`; la prueba con cambio de
   demanda (`reportes/cambio_demanda/`) es informativa y no altera la oficial.

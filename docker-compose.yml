@@ -40,9 +40,12 @@ x-claves-roles: &claves-roles
   NM_CIERRE_PASSWORD: ${NM_CIERRE_PASSWORD:?defina NM_CIERRE_PASSWORD en .env}
   NM_VIGILANTE_PASSWORD: ${NM_VIGILANTE_PASSWORD:?defina NM_VIGILANTE_PASSWORD en .env}
 
+# Una sola declaración `build:` por imagen (etapa 9): `api` construye la imagen de la aplicación
+# y `airflow-webserver` la de Airflow (los mismos servicios que usa el simulador); los demás servicios usan la misma etiqueta con
+# `pull_policy: never`. Si varios servicios declaran `build:` con la misma etiqueta, Compose v5
+# los construye en paralelo y, con el almacén containerd de Docker Desktop, el segundo falla con
+# "image ... already exists" (DECISIONES.md §18).
 x-aplicacion: &aplicacion
-  build:
-    context: .
   # Etiqueta configurable solo para el simulador (etapa 8, S11): sin la variable es la de siempre.
   image: ${NM_IMAGEN_APP:-novamercado-app:local}
   environment: *entorno-aplicacion
@@ -73,9 +76,6 @@ x-entorno-airflow: &entorno-airflow
   PYTHONDONTWRITEBYTECODE: "1"
 
 x-airflow: &airflow
-  build:
-    context: .
-    dockerfile: Dockerfile.airflow
   image: ${NM_IMAGEN_AIRFLOW:-novamercado-airflow:local}
   environment: *entorno-airflow
   volumes:
@@ -143,6 +143,7 @@ services:
   # de raw/ (por SHA-256; si raw/ falta pero los datos ya están cargados, se omite).
   preparar:
     <<: *aplicacion
+    pull_policy: never                # imagen construida por "api"
     command: ["sh", "-c", "alembic upgrade head && python -m app.db.roles && python -m app.db.carga --raw /datos/raw"]
     environment:
       <<: [*entorno-aplicacion, *claves-roles]
@@ -158,6 +159,7 @@ services:
   # E7-14: a través del lanzador y el arranque verificado (procedencia antes de importar).
   entrenamiento-inicial:
     <<: *aplicacion
+    pull_policy: never                # imagen construida por "api"
     command: ["/app/docker/ejecutar", "arranque"]
     depends_on:
       preparar:
@@ -170,6 +172,8 @@ services:
   # y carga el primer modelo sola, sin reinicio, en cuanto PostgreSQL lo confirma.
   api:
     <<: *aplicacion
+    build:                            # única construcción de la imagen de la aplicación
+      context: .
     environment:
       <<: *entorno-aplicacion
       MODELO_CACHE_DIR: /app/modelos/cache
@@ -207,6 +211,7 @@ services:
   # ------------------------------------------------------------------ Airflow (etapa 7)
   airflow-init:
     <<: *airflow
+    pull_policy: never                # imagen construida por "airflow-webserver"
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
@@ -238,6 +243,7 @@ services:
   # marcar_inicio), las de nm_cierre (registrar_resultado) y nm_vigilante (vigilante).
   airflow-scheduler:
     <<: *airflow
+    pull_policy: never                # imagen construida por "airflow-webserver"
     command: ["scheduler"]
     environment:
       <<: [*entorno-airflow, *entorno-aplicacion, *claves-roles]
@@ -256,6 +262,9 @@ services:
 
   airflow-webserver:
     <<: *airflow
+    build:                            # única construcción de la imagen de Airflow
+      context: .
+      dockerfile: Dockerfile.airflow
     command: ["webserver"]
     ports:
       # Por defecto solo en 127.0.0.1 (interfaz y API REST con autenticación básica)
