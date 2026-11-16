@@ -11304,7 +11304,7 @@
       {
        "accion": "reparar",
        "campo": "ventas[11].ventas",
-       "detalle": "'191,0' se interpretó como 191 (coma decimal convertida a punto)"
+       "detalle": "'N,N' se interpretó como N (coma decimal convertida a punto)"
       }
      ]
     },
@@ -11390,7 +11390,7 @@
       {
        "accion": "reparar",
        "campo": "ventas[3].ventas",
-       "detalle": "149.0 se interpretó como 149 (número decimal sin parte fraccionaria)"
+       "detalle": "N.N se interpretó como N (número decimal sin parte fraccionaria)"
       }
      ]
     },
@@ -11701,7 +11701,7 @@
   "familia_repetida_distinta": {
    "codigo": 422,
    "respuesta": {
-    "detail": "ventas[12].familia_id: la familia 'carnes' aparece repetida con valores distintos (ventas[3].ventas=12, ventas[12].ventas=13); no es posible decidir cuál es el correcto"
+    "detail": "ventas[12].familia_id: la familia 'carnes' aparece repetida con valores distintos (ventas[3].ventas=N, ventas[12].ventas=N); no es posible decidir cuál es el correcto"
    }
   },
   "valor_negativo+tienda_ausente": {
@@ -11772,7 +11772,7 @@
       {
        "accion": "reparar",
        "campo": "ventas[0].ventas",
-       "detalle": "'1,206' se interpretó como 1206 (separador de miles ',' eliminado)"
+       "detalle": "'N,N' se interpretó como N (separador de miles ',' eliminado)"
       }
      ]
     },
@@ -11810,7 +11810,7 @@
       {
        "accion": "advertir",
        "campo": "ventas[7].ventas",
-       "detalle": "'170,5' no es un número entero de unidades; se redondeó a 171"
+       "detalle": "'N,N' no es un número entero de unidades; se redondeó a N"
       }
      ]
     },
@@ -11826,7 +11826,7 @@
       {
        "accion": "reparar",
        "campo": "ventas[3].ventas",
-       "detalle": "'26,0' se interpretó como 26 (coma decimal convertida a punto)"
+       "detalle": "'N,N' se interpretó como N (coma decimal convertida a punto)"
       }
      ]
     },
@@ -11880,7 +11880,7 @@
       {
        "accion": "advertir",
        "campo": "ventas[0].ventas",
-       "detalle": "venta negativa -550 (posible devolución); el registro no se guardó"
+       "detalle": "venta negativa -N (posible devolución); el registro no se guardó"
       }
      ]
     },
@@ -11924,7 +11924,7 @@
       {
        "accion": "reparar",
        "campo": "ventas[6].ventas",
-       "detalle": "' 290 ' se interpretó como 290 (número recibido como texto (con espacios alrededor))"
+       "detalle": "' N ' se interpretó como N (número recibido como texto (con espacios alrededor))"
       }
      ]
     },
@@ -12052,7 +12052,7 @@
   "familia_repetida_distinta+fecha_mm_dd+campo_desconocido": {
    "codigo": 422,
    "respuesta": {
-    "detail": "ventas[12].familia_id: la familia 'cuidado_personal' aparece repetida con valores distintos (ventas[4].ventas=82, ventas[12].ventas=83); no es posible decidir cuál es el correcto"
+    "detail": "ventas[12].familia_id: la familia 'cuidado_personal' aparece repetida con valores distintos (ventas[4].ventas=N, ventas[12].ventas=N); no es posible decidir cuál es el correcto"
    }
   },
   "familia_repetida_igual+tienda_decimal_entero+fecha_mm_dd": {
@@ -12100,7 +12100,7 @@
       {
        "accion": "reparar",
        "campo": "ventas[10].ventas",
-       "detalle": "' 239 ' se interpretó como 239 (número recibido como texto (con espacios alrededor))"
+       "detalle": "' N ' se interpretó como N (número recibido como texto (con espacios alrededor))"
       },
       {
        "accion": "advertir",
@@ -12352,7 +12352,7 @@
       {
        "accion": "advertir",
        "campo": "ventas[7].ventas",
-       "detalle": "'39,5' no es un número entero de unidades; se redondeó a 40"
+       "detalle": "'N,N' no es un número entero de unidades; se redondeó a N"
       }
      ]
     },
@@ -12519,7 +12519,7 @@
   "familia_repetida_distinta+campo_camel": {
    "codigo": 422,
    "respuesta": {
-    "detail": "ventas[12].familia_id: la familia 'snacks' aparece repetida con valores distintos (ventas[11].ventas=145, ventas[12].ventas=146); no es posible decidir cuál es el correcto"
+    "detail": "ventas[12].familia_id: la familia 'snacks' aparece repetida con valores distintos (ventas[11].ventas=N, ventas[12].ventas=N); no es posible decidir cuál es el correcto"
    }
   },
   "valor_booleano": {
@@ -12599,7 +12599,7 @@
   "familia_repetida_distinta+tienda_palabra+fecha_mm_dd": {
    "codigo": 422,
    "respuesta": {
-    "detail": "ventas[12].familia_id: la familia 'panaderia' aparece repetida con valores distintos (ventas[10].ventas=258, ventas[12].ventas=259); no es posible decidir cuál es el correcto"
+    "detail": "ventas[12].familia_id: la familia 'panaderia' aparece repetida con valores distintos (ventas[10].ventas=N, ventas[12].ventas=N); no es posible decidir cuál es el correcto"
    }
   }
  }

@@ -7,7 +7,14 @@ Informe agregado de la reproducción de 90 días aceptada (`d14fdcfe`), exportad
 |---|---|
 | `resumen.md` | resultado, los 11 criterios, solicitudes, defectos, reentrenamientos, mediciones, costo |
 | `metricas.json` | lo mismo en forma legible por máquina (escenario, plazos, fallos por criterio, ejecuciones) |
-| `ejemplos.json` | un ejemplo por tipo de defecto: solicitudes y respuestas de predicción; de observaciones solo la respuesta |
+| `ejemplos.json` | un ejemplo por tipo de defecto: solicitudes y respuestas de predicción; de observaciones solo la respuesta, con los valores de ventas anonimizados |
+
+En las respuestas de observaciones de `ejemplos.json`, los mensajes de calidad repiten el
+valor de venta recibido. Al publicar, cada número del `detalle` de los campos
+`ventas[i].ventas` y los valores `ventas[i].ventas=…` del `detail` de los 422 se
+reemplazaron por `N`; se conservan el formato (`'N,N' se interpretó como N`), el campo,
+la acción y el código. Las predicciones no se modificaron. La copia en `trabajo/informe/`
+de la ejecución queda sin anonimizar y fuera del repositorio.
 
 ## Procedencia
 
